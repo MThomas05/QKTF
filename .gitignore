@@ -11,6 +11,8 @@ venv/
 # Data + Results
 data/
 results/
+papers/
+notes/
 
 # Packaging
 *.egg-info
