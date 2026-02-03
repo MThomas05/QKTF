@@ -13,6 +13,7 @@ data/
 results/
 papers/
 notes/
+sandbox/
 
 # Packaging
 *.egg-info
