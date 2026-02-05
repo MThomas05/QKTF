@@ -16,7 +16,7 @@ def cov_matern(d, loghyper, x):
 
 def bohman(loghyper, x):
     range_ = np.exp(loghyper[0])
-    dius = np.abs(x[:, None] - x[None, :])
+    dis = np.abs(x[:, None] - x[None, :])
     r = np.minimum(dis/range_, 1)
     k = (1-r)*np.cos(np.pi*r)+np.sin(np.pi*r)/np.pi
     k[k < 1e-16] = 0
@@ -34,7 +34,7 @@ def unfold(tensor, mode):
 
 def fold(mat, dim, mode):
     """
-    Docstring for fold
+    Function that performs folding of an unfolded tensor.
     
     :param mat: unfolded tensor
     :param dim: tuple/1d array containing dimensions of original tensor
@@ -59,6 +59,7 @@ def global_admm(u, lambda, rho, kdu, mask, tau, max_iter):
     :param tau: quantile level
     :param max_iter: maximum number of iterations
     """
+
     
 
 
