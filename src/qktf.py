@@ -1,5 +1,6 @@
 import cupy as np
 import numpy
+from cupyx.scipy.linalg import cg
 
 def cov_matern(d, loghyper, x):
     ell = np.exp(loghyper[0])
@@ -47,27 +48,47 @@ def fold(mat, dim, mode):
             index.append(i)
     return np.moveaxis(np.reshape(mat, list(dim[index]), order = 'F'), 0, mode)
 
-def global_admm(u, lambda, rho, kdu, mask, tau, max_iter):
+def global_admm(kdu, psi, R, sigma, G, Hd, Hd_T, mask, mask_T, theta, z, max_iter, tau=tau):
     """
-    ADMM algorithm for estimating the global structure of data tensor
+    Function that calculate the CG for U_d update in ADMM function
     
-    :param u: latent matrices
-    :param lamda: regulariser
-    :param rho: regulariser
-    :param kdu: covariance matrix
-    :param mask: mask matrix
-    :param tau: quantile level
-    :param max_iter: maximum number of iterations
+    :param kdu: covariance norm (kernel)
+    :param psi: regularisation parameter
+    :param R: pre-specified rank
+    :param sigma: regularisation parameter
+    :param G: tensor Y - R
     """
-    for k in range(max_iter):
-        # latent matrix U_d^(k+1) update
-        def shrink(x, alpha):
-            """Shrink[x, alpha] = sgn(x) * max(abs(x) - alpha, 0)
-            """
-            return np.sign(x) * np.maximum(np.abs(x) - alpha, 0)
-        
-    x, s, vh = np.linalg.svd(u) # svd to compute singular values for computation of eta (largest eigenvalues of u^T*u)
-    eta = s[0]**2 # s[0] is the largest singular value
+    # latent matrix u-update
+    oh = mask @ Hd
+    oh_T = mask_T @ Hd_T
+    G_T = G.T
+    a = psi * (kdu @ numpy.identity(R)) + (Hd @ mask)
+    b1 = numpy.dot(theta, mask_T @ Hd)
+    b2 = z * (oh_T + oh) - (Hd_T @ G.ravel(order='F') - Hd @ G_T.ravel(order='F'))
+    b = b1 + 0.5*sigma*b2
+    x0 = priorvalue.copy()
+    u, info = linalg.cg(a, b, x0=x0, atol = 1e-4, max_iter=max_iter)
+
+    # auxiliary variable z-update
+    def prox_map(xi, alpha):
+        """Proximal mapping = xi - max((tau - 1) / alpha, min(xi, tau/alpha))
+        """
+        low = (tau - 1) / alpha
+        high = tau / alpha
+        return xi - numpy.maximum((tau - 1) / alpha, numpy.minimum(xi, tau / alpha))
+    
+    alpha = N * sigma
+    xi = (mask @ G) - (oh @ u) + ((1 / sigma) * theta)
+
+    z = prox_map(xi, alpha)
+    
+    # lagrangian multiplier theta-update
+
+    theta = theta - sigma * (oh @ u.T) + z - (mask @ G)
+
+    return u, info
+
+
 
 def qktf(X, mask_data):
     N = X.shape # gets the shape of the data
@@ -87,6 +108,14 @@ def qktf(X, mask_data):
     vec_mask = [mask_matrix[d].ravel(order = 'F') for d in range(D)] # creates vec(O_(d)^T)
     obs = [np.where(mask_flat[d] == 1) for d in range(D)] # where data is observed in vec(O_(d)^T)
 
+    d_all = np.arange(D) # array of all dimensions
+    Gtensor = X - Rtensor # G_Omega in latent matrix optimisation
+
+    for d in range(D):
+        dsub = numpy.delete(d_all, d) # deletes d dimension
+        dsub = numpy.array(dsub.get()) # creates an array and brings to CPU
+        Hdu = khatri_rao(U[dsub[1]], U[dsub[0]]) # creates H_d^u with k and k+1 estimates of U_d
+        
 
 
 
