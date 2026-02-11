@@ -1,6 +1,6 @@
 import cupy as np
 import numpy
-from cupyx.scipy.linalg import cg
+from cupyx.scipy.sparse import linalg
 
 def cov_matern(d, loghyper, x):
     ell = np.exp(loghyper[0])
@@ -48,7 +48,22 @@ def fold(mat, dim, mode):
             index.append(i)
     return np.moveaxis(np.reshape(mat, list(dim[index]), order = 'F'), 0, mode)
 
-def global_admm(kdu, psi, R, sigma, G, Hd, Hd_T, mask, mask_T, theta, z, max_iter, tau=tau):
+def lin_operator(u, mask, Hd, Hd_T, psi, sigma, kdu, R, M):
+    """Function that creates the linear operator used in conjugate gradient method
+    """
+    X = u.reshape(R, M, order = 'F') 
+    A = Hd @ X
+    A *= mask_T
+    cov_A = psi * (Hd @ kdu)
+    mask_a = sigma * (Hd_T @ A)
+    A_op = (cov_A + mask_a).ravel(order = 'F')
+    def matvec(v):
+        return A_op
+    AU = LinearOperator((n, n), matvec=matvec)
+    return AU 
+
+
+def global_admm(kdu, psi, R, sigma, G, Hd, Hd_T, mask, mask_T, theta, z, priorvalue, max_iter, tau):
     """
     Function that calculate the CG for U_d update in ADMM function
     
@@ -67,6 +82,8 @@ def global_admm(kdu, psi, R, sigma, G, Hd, Hd_T, mask, mask_T, theta, z, max_ite
     b2 = z * (oh_T + oh) - (Hd_T @ G.ravel(order='F') - Hd @ G_T.ravel(order='F'))
     b = b1 + 0.5*sigma*b2
     x0 = priorvalue.copy()
+    def matvec(x):
+        return 
     u, info = linalg.cg(a, b, x0=x0, atol = 1e-4, max_iter=max_iter)
 
     # auxiliary variable z-update
@@ -88,8 +105,6 @@ def global_admm(kdu, psi, R, sigma, G, Hd, Hd_T, mask, mask_T, theta, z, max_ite
 
     return u, info
 
-
-
 def qktf(X, mask_data):
     N = X.shape # gets the shape of the data
     N = numpy.array(N) # sets the shape of the data to an array
@@ -108,13 +123,30 @@ def qktf(X, mask_data):
     vec_mask = [mask_matrix[d].ravel(order = 'F') for d in range(D)] # creates vec(O_(d)^T)
     obs = [np.where(mask_flat[d] == 1) for d in range(D)] # where data is observed in vec(O_(d)^T)
 
+
+    theta = 0 # Initialise theta as 0
+    z = 0 # Initialise z as 0
+    U = 0 # Initialise latent matrices to 0
+    Uvector = [U[d].ravel(order = 'F') for d in range(D)]
+    UTvector = [U[d].T.ravel(order = 'F') for d in range(D)]
+
     d_all = np.arange(D) # array of all dimensions
     Gtensor = X - Rtensor # G_Omega in latent matrix optimisation
+    approxU = [None] * D
+    iter = 0
 
-    for d in range(D):
-        dsub = numpy.delete(d_all, d) # deletes d dimension
-        dsub = numpy.array(dsub.get()) # creates an array and brings to CPU
-        Hdu = khatri_rao(U[dsub[1]], U[dsub[0]]) # creates H_d^u with k and k+1 estimates of U_d
+    while True:
+        Gtensor = X - Rtensor # G_Omega in latent matrix optimisation
+        Gtensor_mask = Gtensor * mask_data
+
+        for d in range(D):
+            dsub = numpy.delete(d_all, d) # deletes d dimension
+            dsub = numpy.array(dsub.get()) # creates an array and brings to CPU
+            Hdu = khatri_rao(U[dsub[1]], U[dsub[0]]) # creates H_d^u with k and k+1 estimates of U_d
+            Hdu_T = Hdu.T
+            G = Hdu_T @ unfold(Gtensor_mask, d).T
+            UTvector[d], approxU[d] = global_admm(kdu, psi, R, G, Hdu, Hdu_T, mask_matrix_c, mask_matrix_cT, theta, z, UTvector[d], 1000, tau)
+
         
 
 
