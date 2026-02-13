@@ -108,7 +108,8 @@ def qktf(X, mask_data, R, psi, tau, sigma, K0):
     N = X.shape # gets the shape of the data
     N = np.array(N) # sets the shape of the data to an array
     D = X.ndim # gets the dimensions of the data
-    
+
+    #---------- Binary indicator matrix ----------
     mask_data = mask_data.astype(bool) # sets data to True if observed, False if not observed
     non_obs = np.where(mask_data == 0) # variable for unobserved data
     mask_matrix = [unfold(X, d) for d in range(D)] # unfolds binary matrix
