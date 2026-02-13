@@ -1,6 +1,7 @@
 import cupy as np
 import numpy
-from cupyx.scipy.sparse import linalg
+from cupyx.scipy.sparse import linalg, LinearOperator
+from cupyx.scipy.linalg import khatri_rao
 
 def cov_matern(d, loghyper, x):
     ell = np.exp(loghyper[0])
@@ -48,22 +49,29 @@ def fold(mat, dim, mode):
             index.append(i)
     return np.moveaxis(np.reshape(mat, list(dim[index]), order = 'F'), 0, mode)
 
-def lin_operator(u, mask, Hd, Hd_T, psi, sigma, kdu, R, M):
-    """Function that creates the linear operator used in conjugate gradient method
-    """
-    X = u.reshape(R, M, order = 'F') 
-    A = Hd @ X
-    A *= mask_T
-    cov_A = psi * (Hd @ kdu)
-    mask_a = sigma * (Hd_T @ A)
-    A_op = (cov_A + mask_a).ravel(order = 'F')
+def prox_map(xi, alpha, tau):
+        """Proximal mapping = xi - max((tau - 1) / alpha, min(xi, tau/alpha))
+        """
+        low = (tau - 1) / alpha
+        high = tau / alpha
+        return xi - np.maximum((tau - 1) / alpha, np.minimum(xi, tau / alpha))    
+
+def make_op(Hd, mask_matrix_c, psi, sigma, kdu, R, M):
+    Hd_T = Hd.T
+    n = R*M
+
     def matvec(v):
-        return A_op
-    AU = LinearOperator((n, n), matvec=matvec)
-    return AU 
+        V = v.reshape(R, M, order='F')
+        HV = Hd @ V # N * M matrix (M = I_d)
+        HV *= mask_matrix_c # Projector for mask matrix
+        HtHV = Hd_T @ HV # R * M
+        cov = psi * (V @ kdu) # R * M
+        op = (sigma * HtHV) + cov # Operator for CG method
+        return op.ravel(order='F') 
+    
+    return LinearOperator((n, n), matvec=matvec, dtype=float)
 
-
-def global_admm(kdu, psi, R, sigma, G, Hd, Hd_T, mask, mask_T, theta, z, priorvalue, max_iter, tau):
+def global_admm(kdu, psi, sigma, g_mat, Hd, mask_matrix_c, x, z, sum_obs, priorvalue, max_iter, tau):
     """
     Function that calculate the CG for U_d update in ADMM function
     
@@ -73,41 +81,32 @@ def global_admm(kdu, psi, R, sigma, G, Hd, Hd_T, mask, mask_T, theta, z, priorva
     :param sigma: regularisation parameter
     :param G: tensor Y - R
     """
-    # latent matrix u-update
-    oh = mask @ Hd
-    oh_T = mask_T @ Hd_T
-    G_T = G.T
-    a = psi * (kdu @ numpy.identity(R)) + (Hd @ mask)
-    b1 = numpy.dot(theta, mask_T @ Hd)
-    b2 = z * (oh_T + oh) - (Hd_T @ G.ravel(order='F') - Hd @ G_T.ravel(order='F'))
-    b = b1 + 0.5*sigma*b2
-    x0 = priorvalue.copy()
-    def matvec(x):
-        return 
-    u, info = linalg.cg(a, b, x0=x0, atol = 1e-4, max_iter=max_iter)
+    R, M = g_mat.shape
+    n = R * M
+    Hd_T = Hd.T
+    rhs_mat = mask_matrix_c * (z - g_mat - x)
+    b_mat = sigma * (Hd_T @ rhs_mat)
+    b = b_mat.ravel(order='F')
 
-    # auxiliary variable z-update
-    def prox_map(xi, alpha):
-        """Proximal mapping = xi - max((tau - 1) / alpha, min(xi, tau/alpha))
-        """
-        low = (tau - 1) / alpha
-        high = tau / alpha
-        return xi - numpy.maximum((tau - 1) / alpha, numpy.minimum(xi, tau / alpha))
+    #---------- u-update ----------
+    au = make_op(Hd, mask_matrix_c, psi, sigma, kdu, R, M)
+    x0 = priorvalue.copy()
+    u_vec, info = linalg.cg(au, b, x0 = x0, atol = 1e-4, maxiter = max_iter)
     
-    alpha = N * sigma
-    xi = (mask @ G) - (oh @ u) + ((1 / sigma) * theta)
+    #---------- z-update (proximal mapping) ----------
+    alpha = sum_obs * sigma
+    xi = g_mat - x - (au @ u_vec) 
 
     z = prox_map(xi, alpha)
     
-    # lagrangian multiplier theta-update
+    #---------- x-update (lagrangian multiplier) ----------
+    x = x + (au @ u_vec) + z - g_mat
 
-    theta = theta - sigma * (oh @ u.T) + z - (mask @ G)
+    return u_vec, z, x, info
 
-    return u, info
-
-def qktf(X, mask_data):
+def qktf(X, mask_data, R, psi, tau, sigma, K0):
     N = X.shape # gets the shape of the data
-    N = numpy.array(N) # sets the shape of the data to an array
+    N = np.array(N) # sets the shape of the data to an array
     D = X.ndim # gets the dimensions of the data
     
     mask_data = mask_data.astype(bool) # sets data to True if observed, False if not observed
@@ -121,31 +120,39 @@ def qktf(X, mask_data):
     obs_centred = X_centred * mask_data # keeps mean-centred values for observed data
     mask_matrix_c = [mask_matrix[d].T for d in range(D)] # creates O_(d)^T
     vec_mask = [mask_matrix[d].ravel(order = 'F') for d in range(D)] # creates vec(O_(d)^T)
-    obs = [np.where(mask_flat[d] == 1) for d in range(D)] # where data is observed in vec(O_(d)^T)
+    obs = [np.where(vec_mask[d] == 1) for d in range(D)] # where data is observed in vec(O_(d)^T)
+    sum_obs = np.sum(mask_data == 1) # sum of observed values
 
-
-    theta = 0 # Initialise theta as 0
-    z = 0 # Initialise z as 0
-    U = 0 # Initialise latent matrices to 0
+    #---------- Initialisations ----------
+    x = np.zeros((N)) # Initialise theta as 0
+    z = np.zeros((N)) # Initialise z as 0
+    U = np.zeros((N)) # Initialise latent matrices to 0
     Uvector = [U[d].ravel(order = 'F') for d in range(D)]
     UTvector = [U[d].T.ravel(order = 'F') for d in range(D)]
+    rtensor = np.zeros(N)
+    rvector = rtensor.ravel(order='F')
+    m_unfold = U[0] @ khatri_rao(U[2], U[1]).T
+    obs_centred[non_obs] = m[non_obs] + rtensor[non_obs]
 
     d_all = np.arange(D) # array of all dimensions
-    Gtensor = X - Rtensor # G_Omega in latent matrix optimisation
     approxU = [None] * D
     iter = 0
 
     while True:
-        Gtensor = X - Rtensor # G_Omega in latent matrix optimisation
+        Gtensor = X - rtensor # G_Omega in latent matrix optimisation
         Gtensor_mask = Gtensor * mask_data
 
         for d in range(D):
             dsub = numpy.delete(d_all, d) # deletes d dimension
             dsub = numpy.array(dsub.get()) # creates an array and brings to CPU
             Hdu = khatri_rao(U[dsub[1]], U[dsub[0]]) # creates H_d^u with k and k+1 estimates of U_d
-            Hdu_T = Hdu.T
-            G = Hdu_T @ unfold(Gtensor_mask, d).T
-            UTvector[d], approxU[d] = global_admm(kdu, psi, R, G, Hdu, Hdu_T, mask_matrix_c, mask_matrix_cT, theta, z, UTvector[d], 1000, tau)
+            g_mat = Hdu.T @ unfold(Gtensor_mask, d).T
+            UTvector[d], approxU[d] = global_admm(kdu, psi, g_mat, Hdu, mask_matrix_c[d], x, z, UTvector[d], 1000, tau)
+            U[d] = (UTvector[d].reshape(R, N[d], order='F')).T
+
+        m_unfold1 = U[0] @ (khatri_rao(U[2], U[1]).T)
+        m = fold(m_unfold1, N, 0)
+        obs_centred[non_obs] = m[non_obs] + rtensor[non_obs]
 
         
 
