@@ -71,7 +71,7 @@ def make_op(Hd, mask_matrix_c, psi, sigma, kdu, R, M):
     
     return LinearOperator((n, n), matvec=matvec, dtype=float)
 
-def global_admm(kdu, psi, sigma, g_mat, Hd, mask_matrix_c, x, z, sum_obs, priorvalue, max_iter, tau):
+def global_admm(kdu, psi, sigma, g_mat, Hd, mask_matrix_c, theta, z, sum_obs, priorvalue, max_iter, tau):
     """
     Function that calculate the CG for U_d update in ADMM function
     
@@ -79,7 +79,15 @@ def global_admm(kdu, psi, sigma, g_mat, Hd, mask_matrix_c, x, z, sum_obs, priorv
     :param psi: regularisation parameter
     :param R: pre-specified rank
     :param sigma: regularisation parameter
-    :param G: tensor Y - R
+    :param g_mat: tensor Y - R
+    :param Hd: khatri-rao product of latent matrices
+    :param mask_matrix_c: binary indicator matrix
+    :param theta: lagrangian multipler for ADMM
+    :param z: auxiliary variable for ADMM
+    :param sum_obs: sum of observed entries for proximal mapping
+    :param priorvalue: allows for next iteration to being at previous iteration value
+    :param max_iter: maximum number of iterations
+    :param tau: quantile 
     """
     R, M = g_mat.shape
     n = R * M
@@ -100,9 +108,24 @@ def global_admm(kdu, psi, sigma, g_mat, Hd, mask_matrix_c, x, z, sum_obs, priorv
     z = prox_map(xi, alpha)
     
     #---------- x-update (lagrangian multiplier) ----------
-    x = x + (au @ u_vec) + z - g_mat
+    theta = theta + (au @ u_vec) + z - g_mat
 
-    return u_vec, z, x, info
+    return u_vec, z, theta, info
+
+def local_admm(kdr, gamma, lambda, l_mat, x, y, sum_obs, priorvalue, max_iter, tau):
+    """
+    Functions that performs ADMM on the local structure of the tensor
+    
+    :param kdr: covariance norm
+    :param gamma, lambda: regularisers
+    :param l_mat: completed tensor Y - M
+    :param y: auxiliary variable for ADMM
+    :param x: lagrangian multiplier in ADMM
+    :param sum_obs: sum of observed entries for proximal mapping
+    :param priorvalue: allows for the next iteration to start with previous iteration value
+    :param max_iter: maximum number of iterations
+    :param tau: quantile
+    """
 
 def qktf(X, mask_data, R, psi, tau, sigma, K0):
     N = X.shape # gets the shape of the data
@@ -125,12 +148,14 @@ def qktf(X, mask_data, R, psi, tau, sigma, K0):
     sum_obs = np.sum(mask_data == 1) # sum of observed values
 
     #---------- Initialisations ----------
-    x = np.zeros((N)) # Initialise theta as 0
-    z = np.zeros((N)) # Initialise z as 0
-    U = np.zeros((N)) # Initialise latent matrices to 0
+    theta = np.zeros(N) # Initialise theta as 0
+    z = np.zeros(N) # Initialise z as 0
+    U = np.zeros(N) # Initialise latent matrices to 0
+    rtensor = np.zeros(N) # Initialises r to 0
+    y = np.zeros(N) # Initialises y to 0
+    x = np.zeros(N) # Initialises x to 0
     Uvector = [U[d].ravel(order = 'F') for d in range(D)]
     UTvector = [U[d].T.ravel(order = 'F') for d in range(D)]
-    rtensor = np.zeros(N)
     rvector = rtensor.ravel(order='F')
     m_unfold = U[0] @ khatri_rao(U[2], U[1]).T
     obs_centred[non_obs] = m[non_obs] + rtensor[non_obs]
