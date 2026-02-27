@@ -49,6 +49,12 @@ def fold(mat, dim, mode):
             index.append(i)
     return np.moveaxis(np.reshape(mat, list(dim[index]), order = 'F'), 0, mode)
 
+def kronecker_mvm(K3, K2, K1, vec, d1, d2, d3):
+    temp1 = (K1 @ vec.reshape(d1, d2, d3, order = 'F').reshape(d1, -1)).reshape(d1, d2, d3)
+    temp2 = (K2 @ temp1.transpose(1, 0, 2).reshape(d2, -1)).reshape(d2, d1, d3).transpose(1, 0, 2)
+    temp3 = (K3 @ temp2.transpose(2, 0, 1).reshape(d3, -1)).reshape(d3, d1, d2).transpose(1, 2, 0)
+    return temp3.ravel(order = 'F')
+
 def prox_map(xi, alpha, tau):
         """Proximal mapping = xi - max((tau - 1) / alpha, min(xi, tau/alpha))
         """
@@ -56,7 +62,7 @@ def prox_map(xi, alpha, tau):
         high = tau / alpha
         return xi - np.maximum((tau - 1) / alpha, np.minimum(xi, tau / alpha))    
 
-def make_op(Hd, mask_matrix_c, psi, sigma, kdu, R, M):
+def make_op_g(Hd, mask_matrix_c, psi, sigma, kdu, R, M):
     Hd_T = Hd.T
     n = R*M
 
@@ -96,21 +102,25 @@ def global_admm(kdu, psi, sigma, g_mat, Hd, mask_matrix_c, theta, z, sum_obs, pr
     b_mat = sigma * (Hd_T @ rhs_mat)
     b = b_mat.ravel(order='F')
 
-    #---------- u-update ----------
-    au = make_op(Hd, mask_matrix_c, psi, sigma, kdu, R, M)
-    x0 = priorvalue.copy()
-    u_vec, info = linalg.cg(au, b, x0 = x0, atol = 1e-4, maxiter = max_iter)
-    
-    #---------- z-update (proximal mapping) ----------
-    alpha = sum_obs * sigma
-    xi = g_mat - x - (au @ u_vec) 
+    for j in range(max_iter):
 
-    z = prox_map(xi, alpha)
+        #---------- u-update ----------
+        au = make_op(Hd, mask_matrix_c, psi, sigma, kdu, R, M)
+        x0 = priorvalue.copy()
+        u_vec, info = linalg.cg(au, b, x0 = x0, atol = 1e-4, maxiter = max_iter)
     
-    #---------- x-update (lagrangian multiplier) ----------
-    theta = theta + (au @ u_vec) + z - g_mat
+        #---------- z-update (proximal mapping) ----------
+        alpha = sum_obs * sigma
+        xi = g_mat - theta - (au @ u_vec) 
 
-    return u_vec, z, theta, info
+        z = prox_map(xi, alpha)
+    
+        #---------- x-update (lagrangian multiplier) ----------
+        theta = theta + (au @ u_vec) + z - g_mat
+
+        return u_vec, z, theta, info
+    
+def make_op_l():
 
 def local_admm(kdr, gamma, lambda, l_mat, x, y, sum_obs, priorvalue, max_iter, tau):
     """
@@ -126,6 +136,8 @@ def local_admm(kdr, gamma, lambda, l_mat, x, y, sum_obs, priorvalue, max_iter, t
     :param max_iter: maximum number of iterations
     :param tau: quantile
     """
+
+
 
 def qktf(X, mask_data, R, psi, tau, sigma, K0):
     N = X.shape # gets the shape of the data
