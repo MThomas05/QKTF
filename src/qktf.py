@@ -62,39 +62,15 @@ def prox_map(xi, alpha, tau):
         high = tau / alpha
         return xi - np.maximum((tau - 1) / alpha, np.minimum(xi, tau / alpha))    
 
-def make_op_g(Hd, mask_matrix_c, psi, sigma, kdu, R, M):
-    Hd_T = Hd.T
-    n = R*M
-
-    def matvec(v):
-        V = v.reshape(R, M, order='F')
-        HV = Hd @ V # N * M matrix (M = I_d)
-        HV *= mask_matrix_c # Projector for mask matrix
-        HtHV = Hd_T @ HV # R * M
-        cov = psi * (V @ kdu) # R * M
-        op = (sigma * HtHV) + cov # Operator for CG method
-        return op.ravel(order='F') 
-    
-    return LinearOperator((n, n), matvec=matvec, dtype=float)
+def global_operator(vec, maskT, KrU, KrU_T, Qu, psi, sigma, R, M):
+    X = vec.reshape(R, M, order = 'F')
+    temp = KrU @ X
+    temp *= maskT
+    Ap1 = sigma * (KrU_T @ temp)
+    Ap2 = psi * (X @ Qu)
+    return (Ap1 + Ap2).ravel(order = 'F')
 
 def global_admm(kdu, psi, sigma, g_mat, Hd, mask_matrix_c, theta, z, sum_obs, priorvalue, max_iter, tau):
-    """
-    Function that calculate the CG for U_d update in ADMM function
-    
-    :param kdu: covariance norm (kernel)
-    :param psi: regularisation parameter
-    :param R: pre-specified rank
-    :param sigma: regularisation parameter
-    :param g_mat: tensor Y - R
-    :param Hd: khatri-rao product of latent matrices
-    :param mask_matrix_c: binary indicator matrix
-    :param theta: lagrangian multipler for ADMM
-    :param z: auxiliary variable for ADMM
-    :param sum_obs: sum of observed entries for proximal mapping
-    :param priorvalue: allows for next iteration to being at previous iteration value
-    :param max_iter: maximum number of iterations
-    :param tau: quantile 
-    """
     R, M = g_mat.shape
     n = R * M
     Hd_T = Hd.T
