@@ -105,7 +105,14 @@ def global_admm(Qu, psi, sigma, KrU, mask_matrixT, YR_tilde, priorvalue, max_ite
         if res_pri <= eps_pri and res_dual <= eps_dual:
             break    
 
-        return u_vec, z, theta, info
+    return u_vec, z, theta, info
+    
+def local_operator(vec, pos_obs, Kd, Kt, Ks, lambda, d1, d2, d3):
+    x = np.zeros(d1, d2, d3)
+    x[pos_obs] = vec
+    Ap = kronecker_mvm(Kd, Kt, Ks, x, d1, d2, d3)
+    return Ap[pos_obs] + lambda * vec
+
 
 def local_admm(kdr, gamma, lambda, l_mat, x, y, sum_obs, priorvalue, max_iter, tau):
     """
