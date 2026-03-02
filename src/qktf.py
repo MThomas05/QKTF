@@ -70,42 +70,45 @@ def global_operator(vec, maskT, KrU, KrU_T, Qu, psi, sigma, R, M):
     Ap2 = psi * (X @ Qu)
     return (Ap1 + Ap2).ravel(order = 'F')
 
-def global_admm(Qu, psi, sigma, KrU, mask_matrixT, YR_tilde, priorvalue, max_iter, tau, z, theta, sum_obs):
+def global_admm(Qu, psi, sigma, KrU, mask_matrixT, vec_mask, YR_tilde, priorvalue, max_iter, tau, z, theta, sum_obs):
     R, M = YR_tilde.shape
     YR_flat = YR_tilde.ravel(order = 'F')
     x0 = priorvalue.copy()
+    x0_flat = x0.ravel(order = 'F')
+    z_flat = z.ravel(order = 'F')
+    theta_flat = theta.ravel(order = 'F')
     KrU_T = KrU.T
-    temp_b = KrU @ x0
-    temp_b *= mask_matrixT
-    rhs_mat = mask_matrixT * (YR_tilde - z - theta)
-    b_mat = sigma * (KrU_T @ rhs_mat)
-    b = b_mat.ravel(order='F')
 
     for j in range(max_iter):
-        z_prev = z.copy()
+        z_prev = z_vec.copy()
+        temp_b = KrU @ x0
+        temp_b *= mask_matrixT
+        rhs_mat = mask_matrixT * (YR_tilde - z - theta)
+        b_mat = sigma * (KrU_T @ rhs_mat)
+        b = b_mat.ravel(order='F')
         #---------- u-update ----------
-        au = global_operator(x0, mask_matrixT, KrU, KrU_T, Qu, psi, sigma, R, M)
-        u_vec, info = linalg.cg(au, b, x0 = x0, atol = 1e-4, maxiter = max_iter)
+        A_op = LinearOperator((R*M), (R*M), matvec=lambda v: global_operator(v, mask_matrixT, KrU, KrU_T, Qu, psi, sigma, R, M))
+        u_vec, info = linalg.cg(A_op, b, x0 = x0_flat, atol = 1e-4, maxiter = max_iter)
+        u_mat = u_vec.reshape(R, M, order = 'F')
     
         #---------- z-update (proximal mapping) ----------
         alpha = sum_obs * sigma
-        eta = YR_tilde - theta - (au * u_vec) 
+        eta = YR_flat - theta_flat - u_vec
 
-        z = prox_map(eta)
+        z_vec = prox_map(eta, alpha, tau)
     
         #---------- x-update (lagrangian multiplier) ----------
-        theta = theta + (au * u_vec) + z - YR_tilde
+        theta = theta_flat + u_vec + z_vec - YR_flat
 
         #---------- residuals ----------
-        res_pri = (temp_b * u_vec) + z - mask_matrixT * YR_tilde
-        res_dual = (sigma * temp_b) * (z - z_prev)
-        eps_abs, eps_rel = 1e-4, 1e-4
-        eps_pri = np.sqrt(sum_obs) * eps_abs + eps_rel * np.maximum(np.maximum(np.linalg.norm(temp_b * u_vec, ord = 'F'), np.linalg.norm(z, ord = 'F')), np.linalg.norm(YR_tilde, ord = 'F'))
-        eps_dual = np.sqrt(R) * eps_abs + eps_rel * np.linalg.norm((mask_matrixT @ KrU_T) * theta)
-        if res_pri <= eps_pri and res_dual <= eps_dual:
+        res_pri = u_vec + z_vec - (mask_matrixT * YR_flat)
+        res_dual = (sigma * temp_b) * (z_vec - z_prev)
+        eps_pri = np.sqrt(sum_obs) * 1e-4 + 1e-4 * np.maximum(np.maximum(np.linalg.norm(u_vec), np.linalg.norm(z)), np.linalg.norm(YR_tilde))
+        eps_dual = np.sqrt(R) * 1e-4 + 1e-4 * np.linalg.norm((mask_matrixT @ KrU_T) * theta)
+        if np.linalg.norm(res_pri) <= eps_pri and np.linalg.norm(res_dual) <= eps_dual:
             break    
 
-    return u_vec, z, theta, info
+    return u_vec, z_vec, theta, info
     
 def local_operator(vec, pos_obs, Kd, Kt, Ks, lambda, d1, d2, d3):
     x = np.zeros(d1, d2, d3)
@@ -114,20 +117,18 @@ def local_operator(vec, pos_obs, Kd, Kt, Ks, lambda, d1, d2, d3):
     return Ap[pos_obs] + lambda * vec
 
 
-def local_admm(kdr, gamma, lambda, l_mat, x, y, sum_obs, priorvalue, max_iter, tau):
-    """
-    Functions that performs ADMM on the local structure of the tensor
+def local_admm(lambda, Kd, Kt, Ks, pos_obs, YR_tilde, priorvalue, max_iter):
+    d1, d2, d3 = YR_tilde.shape
+    Y_obs = (YR_tilde.ravel(order = 'F'))[pos_obs]
+    x = priorvalue.copy()
+
+    #---------- admm ----------
+    for j in range(max_iter):
+        z_prev = z.copy()
+        #---------- r-update ----------
+        ar = local_operator(x, pos_obs, Kd, Kt, Ks, lambda, d1, d2, d3)
+
     
-    :param kdr: covariance norm
-    :param gamma, lambda: regularisers
-    :param l_mat: completed tensor Y - M
-    :param y: auxiliary variable for ADMM
-    :param x: lagrangian multiplier in ADMM
-    :param sum_obs: sum of observed entries for proximal mapping
-    :param priorvalue: allows for the next iteration to start with previous iteration value
-    :param max_iter: maximum number of iterations
-    :param tau: quantile
-    """
 
 
 
