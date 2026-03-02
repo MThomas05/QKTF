@@ -116,41 +116,81 @@ def local_operator(vec, pos_obs, Kd, Kt, Ks, lambda, d1, d2, d3):
     Ap = kronecker_mvm(Kd, Kt, Ks, x, d1, d2, d3)
     return Ap[pos_obs] + lambda * vec
 
-
-def local_admm(lambda, Kd, Kt, Ks, pos_obs, YR_tilde, priorvalue, max_iter):
+def local_admm(lambda, x, theta, Kd, Kt, Ks, pos_obs, sum_obs, YR_tilde, priorvalue, mask_matrixT, max_iter, tau):
     d1, d2, d3 = YR_tilde.shape
     Y_obs = (YR_tilde.ravel(order = 'F'))[pos_obs]
     x = priorvalue.copy()
+    x_flat = x.ravel(order = 'F')
+    z_flat = z.ravel(order = 'F')
 
     #---------- admm ----------
     for j in range(max_iter):
         z_prev = z.copy()
+        rhs_mat = mask_matrixT * (y - z - x)
+        b_mat = lambda * rhs_mat
+        b = b_mat.ravel(order='F')
         #---------- r-update ----------
-        ar = local_operator(x, pos_obs, Kd, Kt, Ks, lambda, d1, d2, d3)
+        ar = LinearOperator((R*M), (R*M), matvec=lambda v: local_operator(v, pos_obs, Kd, Kt, Ks, lambda, d1, d2, d3))
+        r_vec, info = linalg.cg(ar, b, x0 = x_flat,atol = 1e-4, maxiter = max_iter)
 
-    
+        #---------- z-update ---------
+        zeta = Y_obs - x_flat - (mask_matrixT * r_vec)
+        alpha = sum_obs * lambda
 
+        z_vec = prox_map(zeta, alpha, tau)
 
+        #---------- x-update ----------
+        x = x_flat + (mask_matrixT * r_vec) + z_vec - Y_obs
 
-def qktf(X, mask_data, R, psi, tau, sigma, K0):
-    N = X.shape # gets the shape of the data
-    N = np.array(N) # sets the shape of the data to an array
-    D = X.ndim # gets the dimensions of the data
+        #---------- convergence criterion ----------
+    return r_vec, z_vec, x, info
+
+def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, varianceR: list, tapering_range, d_maternU, d_maternR, psi, sigma, lambda, tau, maxiter, K0, epsilon):
+    N = I.shape # gets the shape of the data
+    N = numpy.array(N) # sets the shape of the data to an array
+    D = I.ndim # gets the dimensions of the data
+    maxP = float(np.max(I))
 
     #---------- Binary indicator matrix ----------
-    mask_data = mask_data.astype(bool) # sets data to True if observed, False if not observed
-    non_obs = np.where(mask_data == 0) # variable for unobserved data
-    mask_matrix = [unfold(X, d) for d in range(D)] # unfolds binary matrix
-    col = np.sum(mask_matrix[2], axis = 0) > 0 # returns boolean mask where columns of mask_matrix contain at least one zero
-    train_mat = X * mask_data # sets only observed data in actual dataset
-    mask = train_mat > 0 # creates boolean mask of same shape as train_mat
-    train_mat = train_mat[mask] # whenever mask is True keep data point, if False discard - creates 1-D array of positive entries
-    X_centred = X - np.mean(train_mat) # removes global mean before modelling - ADMM converges faster
-    obs_centred = X_centred * mask_data # keeps mean-centred values for observed data
-    mask_matrix_c = [mask_matrix[d].T for d in range(D)] # creates O_(d)^T
-    vec_mask = [mask_matrix[d].ravel(order = 'F') for d in range(D)] # creates vec(O_(d)^T)
-    obs = [np.where(vec_mask[d] == 1) for d in range(D)] # where data is observed in vec(O_(d)^T)
-    sum_obs = np.sum(mask_data == 1) # sum of observed values
+    Omega = Omega.astype(bool)
+    pos_miss = np.where(Omega == 0)
+    num_obs = np.sum(Omega)
+    mask_matrix = [unfold(Omega, d) for d in range(D)]
+    idx = np.sum(mask_matrix[2], axis = 0) > 0
+    train_matrix = I * Omega
+    train_matrix = train_matrix[train_matrix > 0]
+    Isubmean = I - np.mean(train_matrix)
+    T = Isubmean * Omega
+    mask_matrixT = [mask_matrix[d].T for d in range(D)]
+    mask_flat = [mask_matrix[d].ravel(order = 'F') for d in range(D)]
+    pos_obs = [np.where(mask_flat[d] == 1) for d in range(D)]
+
+    #---------- Covariance constraints ----------
+    hyper_Ku = [None] * D
+    hyper_Ku[0] = [np.log(lengthscaleU[0]), np.log(varianceU[0])]
+    hyper_Ku[1] = [np.log(lengthscaleU[1]), np.log(varianceU[1])]
+    
+    hyper_Kr = [None] * D
+    hyper_Kr = [np.log(lengthscaleR[0]), np.log(varianceR[0]), np.log(tapering_range)]
+    hyper_Kr = [np.log(lengthscaleR[1]), np.log(varianceR[1]), np.log(tapering_range)]
+
+    Ku, Kr = [None] * D, [None] * D
+    invKu = [None] * D
+
+    x = np.arange(1, N[0] + 1)
+    Ku[0] = cov_matern(d_maternU, hyper_Ku[0], x)
+    invKu[0] = np.linalg.inv(Ku[0])
+    TaperM = bohman([hyper_Ku[1][2]], x)
+    Kr[1] = csr_matrix(cov_matern(d_maternR, hyper_Ku[0][:2], x) * TaperM)
+
+    x = np.arange(1, N[1] + 1)
+    Ku[1] = cov_matern(d_maternU, hyper_Ku[0], x)
+    invKu = np.linalg.inv(Ku[1])
+    TaperM = bohman([hyper_Ku[1][2]], x)
+    Kr[1] = csr_matrix(cov_matern(d_maternR, hyper_Kr[1][:2], x) * TaperM)
+
+    invKu[2] = csr_matrix(eye(N[2]))
+    Kr[2] = csr_matrix(eye(N[2]))
 
     #---------- Initialisations ----------
     theta = np.zeros(N) # Initialise theta as 0
