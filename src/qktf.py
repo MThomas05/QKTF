@@ -70,33 +70,42 @@ def global_operator(vec, maskT, KrU, KrU_T, Qu, psi, sigma, R, M):
     Ap2 = psi * (X @ Qu)
     return (Ap1 + Ap2).ravel(order = 'F')
 
-def global_admm(kdu, psi, sigma, g_mat, Hd, mask_matrix_c, theta, z, sum_obs, priorvalue, max_iter, tau):
-    R, M = g_mat.shape
-    n = R * M
-    Hd_T = Hd.T
-    rhs_mat = mask_matrix_c * (z - g_mat - x)
-    b_mat = sigma * (Hd_T @ rhs_mat)
+def global_admm(Qu, psi, sigma, KrU, mask_matrixT, YR_tilde, priorvalue, max_iter, tau, z, theta, sum_obs):
+    R, M = YR_tilde.shape
+    YR_flat = YR_tilde.ravel(order = 'F')
+    x0 = priorvalue.copy()
+    KrU_T = KrU.T
+    temp_b = KrU @ x0
+    temp_b *= mask_matrixT
+    rhs_mat = mask_matrixT * (YR_tilde - z - theta)
+    b_mat = sigma * (KrU_T @ rhs_mat)
     b = b_mat.ravel(order='F')
 
     for j in range(max_iter):
-
+        z_prev = z.copy()
         #---------- u-update ----------
-        au = make_op(Hd, mask_matrix_c, psi, sigma, kdu, R, M)
-        x0 = priorvalue.copy()
+        au = global_operator(x0, mask_matrixT, KrU, KrU_T, Qu, psi, sigma, R, M)
         u_vec, info = linalg.cg(au, b, x0 = x0, atol = 1e-4, maxiter = max_iter)
     
         #---------- z-update (proximal mapping) ----------
         alpha = sum_obs * sigma
-        xi = g_mat - theta - (au @ u_vec) 
+        eta = YR_tilde - theta - (au * u_vec) 
 
-        z = prox_map(xi, alpha)
+        z = prox_map(eta)
     
         #---------- x-update (lagrangian multiplier) ----------
-        theta = theta + (au @ u_vec) + z - g_mat
+        theta = theta + (au * u_vec) + z - YR_tilde
+
+        #---------- residuals ----------
+        res_pri = (temp_b * u_vec) + z - mask_matrixT * YR_tilde
+        res_dual = (sigma * temp_b) * (z - z_prev)
+        eps_abs, eps_rel = 1e-4, 1e-4
+        eps_pri = np.sqrt(sum_obs) * eps_abs + eps_rel * np.maximum(np.maximum(np.linalg.norm(temp_b * u_vec, ord = 'F'), np.linalg.norm(z, ord = 'F')), np.linalg.norm(YR_tilde, ord = 'F'))
+        eps_dual = np.sqrt(R) * eps_abs + eps_rel * np.linalg.norm((mask_matrixT @ KrU_T) * theta)
+        if res_pri <= eps_pri and res_dual <= eps_dual:
+            break    
 
         return u_vec, z, theta, info
-    
-def make_op_l():
 
 def local_admm(kdr, gamma, lambda, l_mat, x, y, sum_obs, priorvalue, max_iter, tau):
     """
