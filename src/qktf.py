@@ -1,6 +1,6 @@
 import cupy as np
 import numpy
-from cupyx.scipy.sparse import linalg, LinearOperator
+from cupyx.scipy.sparse import linalg, LinearOperator, eye, csr_matrix
 from cupyx.scipy.linalg import khatri_rao
 
 def cov_matern(d, loghyper, x):
@@ -193,6 +193,8 @@ def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, vari
     Kr[2] = csr_matrix(eye(N[2]))
 
     #---------- Initialisations ----------
+    X = T
+    X[pos_miss] = T.sum() / num_obs
     theta = np.zeros(N) # Initialise theta as 0
     z = np.zeros(N) # Initialise z as 0
     U = np.zeros(N) # Initialise latent matrices to 0
@@ -202,10 +204,11 @@ def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, vari
     Uvector = [U[d].ravel(order = 'F') for d in range(D)]
     UTvector = [U[d].T.ravel(order = 'F') for d in range(D)]
     rvector = rtensor.ravel(order='F')
-    m_unfold = U[0] @ khatri_rao(U[2], U[1]).T
-    obs_centred[non_obs] = m[non_obs] + rtensor[non_obs]
-
+    M_unfold1 = U[0] @ khatri_rao(U[2], U[1]).T
+    M = fold(M_unfold1, N, 0)
+    X[pos_miss] = M[pos_miss] + rtensor[pos_miss]
     d_all = np.arange(D) # array of all dimensions
+    train_norm = np.linalg.norm(T)
     approxU = [None] * D
     iter = 0
 
