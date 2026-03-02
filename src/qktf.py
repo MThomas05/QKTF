@@ -70,7 +70,7 @@ def global_operator(vec, maskT, KrU, KrU_T, Qu, psi, sigma, R, M):
     Ap2 = psi * (X @ Qu)
     return (Ap1 + Ap2).ravel(order = 'F')
 
-def global_admm(Qu, psi, sigma, KrU, mask_matrixT, vec_mask, YR_tilde, priorvalue, max_iter, tau, z, theta, sum_obs):
+def global_admm(Qu, psi, sigma, KrU, mask_matrixT, YR_tilde, priorvalue, max_iter, tau, z, theta, sum_obs):
     R, M = YR_tilde.shape
     YR_flat = YR_tilde.ravel(order = 'F')
     x0 = priorvalue.copy()
@@ -89,7 +89,6 @@ def global_admm(Qu, psi, sigma, KrU, mask_matrixT, vec_mask, YR_tilde, priorvalu
         #---------- u-update ----------
         A_op = LinearOperator((R*M), (R*M), matvec=lambda v: global_operator(v, mask_matrixT, KrU, KrU_T, Qu, psi, sigma, R, M))
         u_vec, info = linalg.cg(A_op, b, x0 = x0_flat, atol = 1e-4, maxiter = max_iter)
-        u_mat = u_vec.reshape(R, M, order = 'F')
     
         #---------- z-update (proximal mapping) ----------
         alpha = sum_obs * sigma
@@ -116,12 +115,12 @@ def local_operator(vec, pos_obs, Kd, Kt, Ks, lambda, d1, d2, d3):
     Ap = kronecker_mvm(Kd, Kt, Ks, x, d1, d2, d3)
     return Ap[pos_obs] + lambda * vec
 
-def local_admm(lambda, x, theta, Kd, Kt, Ks, pos_obs, sum_obs, YR_tilde, priorvalue, mask_matrixT, max_iter, tau):
+def local_admm(lambda, x, a, Kd, Kt, Ks, pos_obs, sum_obs, YR_tilde, priorvalue, mask_matrixT, max_iter, tau):
     d1, d2, d3 = YR_tilde.shape
     Y_obs = (YR_tilde.ravel(order = 'F'))[pos_obs]
     x = priorvalue.copy()
     x_flat = x.ravel(order = 'F')
-    z_flat = z.ravel(order = 'F')
+    a_vec = z.ravel(order = 'F')
 
     #---------- admm ----------
     for j in range(max_iter):
@@ -137,13 +136,13 @@ def local_admm(lambda, x, theta, Kd, Kt, Ks, pos_obs, sum_obs, YR_tilde, priorva
         zeta = Y_obs - x_flat - (mask_matrixT * r_vec)
         alpha = sum_obs * lambda
 
-        z_vec = prox_map(zeta, alpha, tau)
+        a_vec = prox_map(zeta, alpha, tau)
 
         #---------- x-update ----------
-        x = x_flat + (mask_matrixT * r_vec) + z_vec - Y_obs
+        x = x_flat + (mask_matrixT * r_vec) + a_vec - Y_obs
 
         #---------- convergence criterion ----------
-    return r_vec, z_vec, x, info
+    return r_vec, a_vec, x, info
 
 def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, varianceR: list, tapering_range, d_maternU, d_maternR, psi, sigma, lambda, tau, maxiter, K0, epsilon):
     N = I.shape # gets the shape of the data
@@ -214,19 +213,23 @@ def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, vari
 
     while True:
         Gtensor = X - rtensor # G_Omega in latent matrix optimisation
-        Gtensor_mask = Gtensor * mask_data
+        Gtensor_mask = Gtensor * Omega
 
         for d in range(D):
-            dsub = numpy.delete(d_all, d) # deletes d dimension
-            dsub = numpy.array(dsub.get()) # creates an array and brings to CPU
-            Hdu = khatri_rao(U[dsub[1]], U[dsub[0]]) # creates H_d^u with k and k+1 estimates of U_d
-            g_mat = Hdu.T @ unfold(Gtensor_mask, d).T
-            UTvector[d], approxU[d] = global_admm(kdu, psi, g_mat, Hdu, mask_matrix_c[d], x, z, UTvector[d], 1000, tau)
-            U[d] = (UTvector[d].reshape(R, N[d], order='F')).T
+            dsub = np.delete(d_all, d)
+            dsub = numpy.array(dsub.get())
+            KrU = khatri_rao(U[dsub[1]], U[dsub[0]])
+            HG = KrU.T @ unfold(Gtensor_mask, d).T
+            UTvector[d], z[d], theta[d], info = global_admm(invKu[d], psi, sigma, KrU, mask_matrixT[d], HG, UTvector[d], 100, tau, z[d], theta[d], num_obs)
+            U[d] = (UTvector[d].reshape(R, N[d], order = 'F')).T
+        M_unfold1 = U[0] @ (khatri_rao(U[2], U[1]).T)
+        M = fold(M_unfold1, N, 0)
+        X[pos_miss] = M[pos_miss] + rtensor[pos_miss]
+        if iter >= K0:
+            Ltensor = X - M
+            Ltensor_mask = Ltensor * Omega
+            Rvector_temp[pos_obs[0]], 
 
-        m_unfold1 = U[0] @ (khatri_rao(U[2], U[1]).T)
-        m = fold(m_unfold1, N, 0)
-        obs_centred[non_obs] = m[non_obs] + rtensor[non_obs]
 
         
 
