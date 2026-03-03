@@ -95,7 +95,7 @@ def global_admm(Qu, psi, sigma, KrU, mask_matrixT, YR_tilde, priorvalue, max_ite
         z_vec = prox_map(eta, alpha, tau)
     
         #---------- x-update (lagrangian multiplier) ----------
-        theta = theta_flat + u_vec + z_vec - YR_flat
+        theta_flat = theta_flat + u_vec + z_vec - YR_flat
 
         #---------- residuals ----------
         res_pri = u_vec + z_vec - (mask_matrixT * YR_flat)
@@ -105,10 +105,10 @@ def global_admm(Qu, psi, sigma, KrU, mask_matrixT, YR_tilde, priorvalue, max_ite
         if np.linalg.norm(res_pri) <= eps_pri and np.linalg.norm(res_dual) <= eps_dual:
             break    
 
-    return u_vec, z_vec, theta, info
+    return u_vec, z_vec, theta_flat, info
     
 def local_operator(vec, pos_obs, Kd, Kt, Ks, lambda_, d1, d2, d3):
-    x = np.zeros(d1, d2, d3)
+    x = np.zeros(d1 * d2 * d3)
     x[pos_obs] = vec
     Ap = kronecker_mvm(Kd, Kt, Ks, x, d1, d2, d3)
     return Ap[pos_obs] + lambda_ * vec
@@ -129,10 +129,11 @@ def local_admm(lambda_, priorvalue, a, v, Kd, Kt, Ks, pos_obs, sum_obs, YR_tilde
         b[pos_obs] = lambda_ * rhs_mat
         #---------- r-update ----------
         ar = LinearOperator((N, N), matvec=lambda v: local_operator(v, pos_obs, Kd, Kt, Ks, lambda_, d1, d2, d3))
-        r_vec, info = linalg.cg(ar, b, x0 = r, atol = 1e-4, maxiter = max_iter)
+        r_init = np.zeros(N)
+        r_vec, info = linalg.cg(ar, b, x0 = r_init, atol = 1e-4, maxiter = max_iter)
 
         #---------- z-update ---------
-        r_obs = r[pos_obs]
+        r_obs = r_vec[pos_obs]
         zeta = Y_obs - v_vec - r_obs
         alpha = sum_obs * lambda_
 
@@ -150,13 +151,13 @@ def local_admm(lambda_, priorvalue, a, v, Kd, Kt, Ks, pos_obs, sum_obs, YR_tilde
         if np.linalg.norm(res_pri) <= eps_pri and np.linalg.norm(res_dual) <= eps_dual:
             break
 
-    return r_vec, a_vec, v_vec, info
+    return r_obs, a_vec, v_vec, info
 
 def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, varianceR: list, tapering_range, d_maternU, d_maternR, R, psi, sigma, lambda_, tau, maxiter, K0, epsilon):
-    tensor_shape = I.shape
-    N = tensor_shape
+    N = I.shape
+    N = numpy.array(N)
     D = len(N)
-    total_data = np.prod(N)
+    total_data = numpy.prod(N)
     maxP = float(np.max(I))
 
     #---------- Binary indicator matrix ----------
@@ -188,13 +189,13 @@ def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, vari
     x = np.arange(1, N[0] + 1)
     Ku[0] = cov_matern(d_maternU, hyper_Ku[0], x)
     invKu[0] = np.linalg.inv(Ku[0])
-    TaperM = bohman([hyper_Ku[1][2]], x)
-    Kr[1] = csr_matrix(cov_matern(d_maternR, hyper_Ku[0][:2], x) * TaperM)
+    TaperM = bohman([hyper_Kr[0][2]], x)
+    Kr[0] = csr_matrix(cov_matern(d_maternR, hyper_Kr[0][:2], x) * TaperM)
 
     x = np.arange(1, N[1] + 1)
-    Ku[1] = cov_matern(d_maternU, hyper_Ku[0], x)
+    Ku[1] = cov_matern(d_maternU, hyper_Ku[1], x)
     invKu[1] = np.linalg.inv(Ku[1])
-    TaperM = bohman([hyper_Ku[1][2]], x)
+    TaperM = bohman([hyper_Kr[1][2]], x)
     Kr[1] = csr_matrix(cov_matern(d_maternR, hyper_Kr[1][:2], x) * TaperM)
 
     invKu[2] = csr_matrix(eye(N[2]))
@@ -205,7 +206,7 @@ def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, vari
     X[pos_miss] = T.sum() / num_obs
     theta = [np.zeros(np.sum(mask_matrix[d])) for d in range(D)] # Initialise theta as 0
     z = [np.zeros(np.sum(mask_matrix[d])) for d in range(D)] # Initialise z as 0
-    U = [[np.zeros((R, N[d])) for d in range(D)]] # Initialise latent matrices to 0
+    U = [np.zeros((R, N[d])) for d in range(D)] # Initialise latent matrices to 0
     rtensor = np.zeros(N) # Initialises r to 0
     y = np.zeros(N) # Initialises y to 0
     v = np.zeros(N) # Initialises v to 0
@@ -231,10 +232,10 @@ def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, vari
 
         for d in range(D):
             dsub = np.delete(d_all, d)
-            dsub = np.array(dsub.get())
+            dsub = np.array(dsub)
             KrU = khatri_rao(U[dsub[1]], U[dsub[0]])
             HG = KrU.T @ unfold(Gtensor_mask, d).T
-            UTvector[d], z[d], theta[d], info = global_admm(invKu[d], psi, sigma, KrU, mask_matrixT[d], HG, UTvector[d], 100, tau, z[d], theta[d], num_obs)
+            UTvector[d], z[d], theta[d], info = global_admm(invKu[d], psi, sigma, KrU, mask_matrixT[d], HG, UTvector[d], 100, tau, z[d], theta[d], num_obs, total_data)
             U[d] = (UTvector[d].reshape(R, N[d], order = 'F')).T
         M_unfold1 = U[0] @ (khatri_rao(U[2], U[1]).T)
         M = fold(M_unfold1, N, 0)
@@ -242,7 +243,7 @@ def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, vari
         if iter >= K0:
             Ltensor = X - M
             Ltensor_mask = Ltensor * Omega
-            rvector_temp[pos_obs[0]], a_vec, v_vec, info = local_admm(lambda_, rvector_temp[pos_obs[0]], a, v, Kr[2], Kr[1], Kr[0], pos_obs[0], num_obs, Ltensor_mask, mask_matrixT, 100, tau, total_data)
+            rvector_temp[pos_obs[0]], a_vec, v_vec, info = local_admm(lambda_, rvector_temp[pos_obs[0]], a[pos_obs[0]], v[pos_obs[0]], Kr[2], Kr[1], Kr[0], pos_obs[0], num_obs, Ltensor_mask, mask_matrixT, 100, tau, total_data)
             rvector = kronecker_mvm(Kr[2], Kr[1], Kr[0], rvector_temp, N[0], N[1], N[2])
             rtensor = rvector.reshape(N, order = 'F')
             rtensor_unfold3 = unfold(rtensor, 2)
@@ -257,14 +258,10 @@ def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, vari
         Xrecovery = np.maximum(0, Xori)
         Xrecovery = np.minimum(maxP, Xrecovery)
         mseC1 = np.linalg.norm(I[:, :, 0].astype(float) - Xrecovery[:, :, 0], 'fro') ** 2 / (N[0] * N[1])
-        psnrC1 = 10 * np.log10(maxP ** 2 / mseC1)
         mseC2 = np.linalg.norm(I[:, :, 1].astype(float) - Xrecovery[:, :, 1], 'fro') ** 2 / (N[0] * N[1])
-        psnrC2 = 10 * np.log(maxP ** 2 / mseC2)
         mseC3 = np.linalg.norm(I[:, :, 2].astype(float) - Xrecovery[:, :, 2], 'fro') ** 2 / (N[0] * N[1])
-        psnrC3 = 10 * np.log(maxP ** 2 / mseC3)
-        psnrf[iter] = (psnrC1 + psnrC2 + psnrC3) / 3
         iter += 1
-        print(f"Epoch = {iter}, PSNR = {psnrf[iter-1]}")
+        print(f"Epoch = {iter}")
         tol = np.linalg.norm((X - last_ten)) / train_norm
         last_ten = X.copy()
         if (tol < epsilon) or (iter >= maxiter):
