@@ -80,7 +80,7 @@ def global_admm(Qu, psi, sigma, KrU, mask_matrixT, YR_tilde, priorvalue, max_ite
     KrU_T = KrU.T
 
     for j in range(max_iter):
-        z_prev = z_vec.copy()
+        z_prev = z_flat.copy()
         temp_b = KrU @ x0
         temp_b *= mask_matrixT
         rhs_mat = mask_matrixT * (YR_tilde - z - theta)
@@ -182,8 +182,8 @@ def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, vari
     hyper_Ku[1] = [np.log(lengthscaleU[1]), np.log(varianceU[1])]
     
     hyper_Kr = [None] * D
-    hyper_Kr = [np.log(lengthscaleR[0]), np.log(varianceR[0]), np.log(tapering_range)]
-    hyper_Kr = [np.log(lengthscaleR[1]), np.log(varianceR[1]), np.log(tapering_range)]
+    hyper_Kr[0] = [np.log(lengthscaleR[0]), np.log(varianceR[0]), np.log(tapering_range)]
+    hyper_Kr[1] = [np.log(lengthscaleR[1]), np.log(varianceR[1]), np.log(tapering_range)]
 
     Ku, Kr = [None] * D, [None] * D
     invKu = [None] * D
