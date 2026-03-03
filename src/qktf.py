@@ -209,8 +209,8 @@ def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, vari
     U = [np.zeros((R, N[d])) for d in range(D)] # Initialise latent matrices to 0
     rtensor = np.zeros(N) # Initialises r to 0
     y = np.zeros(N) # Initialises y to 0
-    v = np.zeros(N) # Initialises v to 0
-    a = np.zeros(N)
+    v = np.zeros(total_data) # Initialises v to 0
+    a = np.zeros(total_data)
     Uvector = [U[d].ravel(order = 'F') for d in range(D)]
     UTvector = [U[d].T.ravel(order = 'F') for d in range(D)]
     rvector = rtensor.ravel(order='F')
@@ -243,7 +243,7 @@ def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, vari
         if iter >= K0:
             Ltensor = X - M
             Ltensor_mask = Ltensor * Omega
-            rvector_temp[pos_obs[0]], a_vec, v_vec, info = local_admm(lambda_, rvector_temp[pos_obs[0]], a[pos_obs[0]], v[pos_obs[0]], Kr[2], Kr[1], Kr[0], pos_obs[0], num_obs, Ltensor_mask, mask_matrixT, 100, tau, total_data)
+            rvector_temp[pos_obs[0]], a[pos_obs[0]], v[pos_obs[0]], info = local_admm(lambda_, rvector_temp[pos_obs[0]], a[pos_obs[0]], v[pos_obs[0]], Kr[2], Kr[1], Kr[0], pos_obs[0], num_obs, Ltensor_mask, mask_matrixT, 100, tau, total_data)
             rvector = kronecker_mvm(Kr[2], Kr[1], Kr[0], rvector_temp, N[0], N[1], N[2])
             rtensor = rvector.reshape(N, order = 'F')
             rtensor_unfold3 = unfold(rtensor, 2)
