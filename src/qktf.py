@@ -155,11 +155,11 @@ def local_admm(lambda, r, a, v, Kd, Kt, Ks, pos_obs, sum_obs, YR_tilde, priorval
 
     return r_vec, a_vec, v_vec, info
 
-def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, varianceR: list, tapering_range, d_maternU, d_maternR, psi, sigma, lambda, tau, maxiter, K0, epsilon):
-    N = I.shape # gets the shape of the data
-    N = numpy.array(N) # sets the shape of the data to an array
+def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, varianceR: list, tapering_range, d_maternU, d_maternR, R, psi, sigma, lambda, tau, maxiter, K0, epsilon):
+    tensor_shape = I.shape
+    N = tensor_shape
+    D = len(N)
     total_data = np.prod(N)
-    D = I.ndim # gets the dimensions of the data
     maxP = float(np.max(I))
 
     #---------- Binary indicator matrix ----------
@@ -206,9 +206,9 @@ def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, vari
     #---------- Initialisations ----------
     X = T
     X[pos_miss] = T.sum() / num_obs
-    theta = np.zeros(N) # Initialise theta as 0
-    z = np.zeros(N) # Initialise z as 0
-    U = np.zeros(N) # Initialise latent matrices to 0
+    theta = [np.zeros(np.sum(mask_matrix[d])) for d in range(D)] # Initialise theta as 0
+    z = [np.zeros(np.sum(mask_matrix[d])) for d in range(D)] # Initialise z as 0
+    U = [[np.zeros((R, N[d])) for d in range(D)]] # Initialise latent matrices to 0
     rtensor = np.zeros(N) # Initialises r to 0
     y = np.zeros(N) # Initialises y to 0
     v = np.zeros(N) # Initialises v to 0
