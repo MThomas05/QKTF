@@ -70,7 +70,7 @@ def global_operator(vec, maskT, KrU, KrU_T, Qu, psi, sigma, R, M):
     Ap2 = psi * (X @ Qu)
     return (Ap1 + Ap2).ravel(order = 'F')
 
-def global_admm(Qu, psi, sigma, KrU, mask_matrixT, YR_tilde, priorvalue, max_iter, tau, z, theta, sum_obs):
+def global_admm(Qu, psi, sigma, KrU, mask_matrixT, YR_tilde, priorvalue, max_iter, tau, z, theta, sum_obs, total_data):
     R, M = YR_tilde.shape
     YR_flat = YR_tilde.ravel(order = 'F')
     x0 = priorvalue.copy()
@@ -103,7 +103,7 @@ def global_admm(Qu, psi, sigma, KrU, mask_matrixT, YR_tilde, priorvalue, max_ite
         res_pri = u_vec + z_vec - (mask_matrixT * YR_flat)
         res_dual = (sigma * temp_b) * (z_vec - z_prev)
         eps_pri = np.sqrt(sum_obs) * 1e-4 + 1e-4 * np.maximum(np.maximum(np.linalg.norm(u_vec), np.linalg.norm(z)), np.linalg.norm(YR_tilde))
-        eps_dual = np.sqrt(R) * 1e-4 + 1e-4 * np.linalg.norm((mask_matrixT @ KrU_T) * theta)
+        eps_dual = np.sqrt(total_data) * 1e-4 + 1e-4 * np.linalg.norm((mask_matrixT @ KrU_T) * theta)
         if np.linalg.norm(res_pri) <= eps_pri and np.linalg.norm(res_dual) <= eps_dual:
             break    
 
@@ -115,38 +115,50 @@ def local_operator(vec, pos_obs, Kd, Kt, Ks, lambda, d1, d2, d3):
     Ap = kronecker_mvm(Kd, Kt, Ks, x, d1, d2, d3)
     return Ap[pos_obs] + lambda * vec
 
-def local_admm(lambda, x, a, Kd, Kt, Ks, pos_obs, sum_obs, YR_tilde, priorvalue, mask_matrixT, max_iter, tau):
+def local_admm(lambda, r, a, v, Kd, Kt, Ks, pos_obs, sum_obs, YR_tilde, priorvalue, mask_matrixT, max_iter, tau, total_data):
     d1, d2, d3 = YR_tilde.shape
     Y_obs = (YR_tilde.ravel(order = 'F'))[pos_obs]
-    x = priorvalue.copy()
-    x_flat = x.ravel(order = 'F')
-    a_vec = z.ravel(order = 'F')
+    r = priorvalue.copy()
+    r_flat = r.ravel(order = 'F')
+    a_vec = a.ravel(order = 'F')
+    v_vec = v.ravel(order = 'F')
+    N = d1 * d2 * d3
 
     #---------- admm ----------
     for j in range(max_iter):
-        z_prev = z.copy()
-        rhs_mat = mask_matrixT * (y - z - x)
-        b_mat = lambda * rhs_mat
-        b = b_mat.ravel(order='F')
+        a_prev = a_vec.copy()
+        rhs_mat = Y_obs - a_vec - v_vec
+        b = np.zeros(N)
+        b[pos_obs] = lambda * rhs_mat
         #---------- r-update ----------
-        ar = LinearOperator((R*M), (R*M), matvec=lambda v: local_operator(v, pos_obs, Kd, Kt, Ks, lambda, d1, d2, d3))
-        r_vec, info = linalg.cg(ar, b, x0 = x_flat,atol = 1e-4, maxiter = max_iter)
+        ar = LinearOperator((N, N), matvec=lambda v: local_operator(v, pos_obs, Kd, Kt, Ks, lambda, d1, d2, d3))
+        r_vec, info = linalg.cg(ar, b, x0 = r_flat, atol = 1e-4, maxiter = max_iter)
 
         #---------- z-update ---------
-        zeta = Y_obs - x_flat - (mask_matrixT * r_vec)
+        r_obs = r_vec[pos_obs]
+        zeta = Y_obs - v_vec - r_obs
         alpha = sum_obs * lambda
 
         a_vec = prox_map(zeta, alpha, tau)
 
         #---------- x-update ----------
-        x = x_flat + (mask_matrixT * r_vec) + a_vec - Y_obs
+        v_vec = v_vec + r_obs + a_vec - Y_obs
 
         #---------- convergence criterion ----------
-    return r_vec, a_vec, x, info
+        res_pri = r_obs + a_vec - Y_obs
+        res_dual = lambda * (a_vec - z_prev)
+        eps_pri = np.sqrt(sum_obs) * 1e-4 + 1e-4 * np.maximum(np.maximum(np.linalg.norm(r_obs), np.linalg.norm(a_vec)), np.linalg.norm(Y_obs))
+        eps_dual = np.sqrt(total_data) * 1e-4 + 1e-4 * np.linalg.norm(v_vec)
+
+        if np.linalg.norm(res_pri) <= eps_pri and np.linalg.norm(res_dual) <= eps_dual:
+            break
+
+    return r_vec, a_vec, v_vec, info
 
 def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, varianceR: list, tapering_range, d_maternU, d_maternR, psi, sigma, lambda, tau, maxiter, K0, epsilon):
     N = I.shape # gets the shape of the data
     N = numpy.array(N) # sets the shape of the data to an array
+    total_data = np.prod(N)
     D = I.ndim # gets the dimensions of the data
     maxP = float(np.max(I))
 
@@ -199,18 +211,22 @@ def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, vari
     U = np.zeros(N) # Initialise latent matrices to 0
     rtensor = np.zeros(N) # Initialises r to 0
     y = np.zeros(N) # Initialises y to 0
-    x = np.zeros(N) # Initialises x to 0
+    v = np.zeros(N) # Initialises v to 0
     Uvector = [U[d].ravel(order = 'F') for d in range(D)]
     UTvector = [U[d].T.ravel(order = 'F') for d in range(D)]
     rvector = rtensor.ravel(order='F')
+    rvector_temp = rtensor.ravel(order = 'F')
     M_unfold1 = U[0] @ khatri_rao(U[2], U[1]).T
     M = fold(M_unfold1, N, 0)
     X[pos_miss] = M[pos_miss] + rtensor[pos_miss]
     d_all = np.arange(D) # array of all dimensions
     train_norm = np.linalg.norm(T)
+    last_ten = T.copy()
+    psnrf = np.zeros(maxiter)
     approxU = [None] * D
     iter = 0
 
+    #-------- Algorithm iterations --------
     while True:
         Gtensor = X - rtensor # G_Omega in latent matrix optimisation
         Gtensor_mask = Gtensor * Omega
@@ -228,7 +244,36 @@ def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, vari
         if iter >= K0:
             Ltensor = X - M
             Ltensor_mask = Ltensor * Omega
-            Rvector_temp[pos_obs[0]], 
+            rvector_temp[pos_obs[0]], approxE = local_admm(lambda, x, a, Kr[2], Kr[1], Kr[0], pos_obs[0], num_obs, Ltensor_mask, mask_matrixT, rvector_temp[pos_obs[0]], 100, tau)
+            rvector = kronecker_mvm(Kr[2], Kr[1], Kr[0], rvector_temp, N[0], N[1], N[2])
+            rtensor = rvector.reshape(N, order = 'F')
+            rtensor_unfold3 = unfold(rtensor, 2)
+            rtensor_unfold3_obs = rtensor_unfold3[:, idx]
+            Kr[2] = np.cov(rtensor_unfold3_obs)
+        else:
+            rtensor = np.zeros_like(rtensor)
+        
+        #---------- Diagnostics --------
+        X[pos_miss] = M[pos_miss] + rtensor[pos_miss]
+        Xori = X + np.mean(train_matrix)
+        Xrecovery = np.maximum(0, Xori)
+        Xrecovery = np.minimum(maxP, Xrecovery)
+        mseC1 = np.linalg.norm(I[:, :, 0].astype(float) - Xrecovery[:, :, 0], 'fro') ** 2 / (N[0] * N[1])
+        psnrC1 = 10 * np.log10(maxP ** 2 / mseC1)
+        mseC2 = np.linalg.norm(I[:, :, 1].astype(float) - Xrecovery[:, :, 1], 'fro') ** 2 / (N[0] * N[1])
+        psnrC2 = 10 * np.log(maxP ** 2 / mseC2)
+        mseC3 = np.linalg.norm(I[:, :, 2].astype(float) - Xrecovery[:, :, 2], 'fro') ** 2 / (N[0] * N[1])
+        psnrC3 = 10 * np.log(maxP ** 2 / mseC3)
+        psnrf[iter] = (psnrC1 + psnrC2 + psnrC3) / 3
+        iter += 1
+        print(f"Epoch = {iter}, PSNR = {psnrf[iter-1]}")
+        tol = np.linalg.norm((X - last_ten)) / train_norm
+        last_ten = X.copy()
+        if (tol < epsilon) or (iter >= maxiter)
+            break
+
+    return Xori, rtensor + np.mean(train_matrix), M + np.mean(train_matrix)
+
 
 
         
