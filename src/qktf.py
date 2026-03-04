@@ -1,6 +1,6 @@
 import cupy as np
 import numpy
-from cupyx.scipy.sparse import linalg, LinearOperator, eye, csr_matrix
+from cupyx.scipy.sparse import linalg, eye, csr_matrix
 from cupyx.scipy.linalg import khatri_rao
 
 def cov_matern(d, loghyper, x):
@@ -27,20 +27,28 @@ def bohman(loghyper, x):
 
 def unfold(tensor, mode):
     """
-    Function that performs a mode-d unfolding of a tensor.
-    
-    :param tensor: input tensor
-    :param mode: axis to do unfolding
+    Performs mode-d unfolding of a tensor.
+
+    Args:
+        tensor: input tensor
+        mode: axis to do unfolding
+
+    Returns:
+        np.reshape(np.moveaxis(tensor, mode, 0), (tensor.shape[mode], -1), order = 'F'): unfolded tensor
     """
     return np.reshape(np.moveaxis(tensor, mode, 0), (tensor.shape[mode], -1), order = 'F')
 
 def fold(mat, dim, mode):
     """
-    Function that performs folding of an unfolded tensor.
-    
-    :param mat: unfolded tensor
-    :param dim: tuple/1d array containing dimensions of original tensor
-    :param mode: axis where tensor was unfolded
+    Performs folding of an unfolded tensor.
+
+    Args:
+        mat: unfolded tensor
+        dim: tuple/1d array containing dimensions of original tensor
+        mode: axis where tensor was unfolded
+
+    Returns:
+        np.moveaxis(np.reshape(mat, list(dim[index]), order = 'F'), 0, mode): folded tensor
     """
     index = list() # defines new axis order - encodes which axes became rows
     index.append(mode) # ensures 'mode' axis is first
@@ -50,19 +58,49 @@ def fold(mat, dim, mode):
     return np.moveaxis(np.reshape(mat, list(dim[index]), order = 'F'), 0, mode)
 
 def kronecker_mvm(K3, K2, K1, vec, d1, d2, d3):
+    """
+    Performs kronecker matrix-vector multiplication for three matrices.
+
+    Args:
+        K3, K2, K1: matrices in kronecker product
+        vec: vector to be multiplied
+        d1, d2, d3: dimensions of original tensor
+    
+    Returns:
+        temp3.ravel(order = 'F'): result of kronecker matrix-vector multiplication
+    """
     temp1 = (K1 @ vec.reshape(d1, d2, d3, order = 'F').reshape(d1, -1)).reshape(d1, d2, d3)
     temp2 = (K2 @ temp1.transpose(1, 0, 2).reshape(d2, -1)).reshape(d2, d1, d3).transpose(1, 0, 2)
     temp3 = (K3 @ temp2.transpose(2, 0, 1).reshape(d3, -1)).reshape(d3, d1, d2).transpose(1, 2, 0)
     return temp3.ravel(order = 'F')
 
 def prox_map(xi, alpha, tau):
-        """Proximal mapping = xi - max((tau - 1) / alpha, min(xi, tau/alpha))
+        """
+        Proximal mapping for quantile regression.
+
+        Args:
+            xi: input vector
+            alpha: sum_obs * ADMM penalty
+            tau: quantile parameter
         """
         low = (tau - 1) / alpha
         high = tau / alpha
         return xi - np.maximum((tau - 1) / alpha, np.minimum(xi, tau / alpha))    
 
 def global_operator(vec, maskT, KrU, KrU_T, Qu, psi, sigma, R, M):
+    """
+    Constructs linear operator used in global ADMM algorithm.
+
+    Args:
+        vec: input vector
+        maskT: mask matrix transposed
+        KrU: khatri-rao product for construction of H_d
+        KrU_T: transpose of KrU
+        Qu: covariance matrix for global component in dimension d
+        psi: global regularisation
+        sigma: global ADMM penalty
+        R, M: dimensions of input tensor in dimension d
+    """
     X = vec.reshape(R, M, order = 'F')
     temp = KrU @ X
     temp *= maskT
@@ -71,6 +109,30 @@ def global_operator(vec, maskT, KrU, KrU_T, Qu, psi, sigma, R, M):
     return (Ap1 + Ap2).ravel(order = 'F')
 
 def global_admm(Qu, psi, sigma, KrU, mask_matrixT, YR_tilde, priorvalue, max_iter, tau, z, theta, sum_obs, total_data):
+    """
+    Global ADMM algorithm for updating latent matrices in each dimension.
+
+    Args:
+        Qu: covariance matrix for global component in dimension d
+        psi: global regularisation
+        sigma: global ADMM penalty
+        KrU: khatri-rao product for construction of H_d
+        mask_matrixT: mask matrix transposed
+        YR_tilde: input tensor
+        priorvalue: initial value for latent matrix in dimension d
+        max_iter: maximum number of iterations
+        tau: quantile parameter
+        z: initial value for auxiliary variable
+        theta: initial value for lagrangian multiplier
+        sum_obs: number of observed entries
+        total_data: total number of data entries
+    
+    Returns:
+        u_vec: updated latent matrix in dimension d
+        z_vec: updated auxiliary variable
+        theta_flat: updated lagrangian multiplier
+        info: CG convergence information
+    """
     R, M = YR_tilde.shape
     YR_flat = YR_tilde.ravel(order = 'F')
     x0 = priorvalue.copy()
@@ -85,7 +147,7 @@ def global_admm(Qu, psi, sigma, KrU, mask_matrixT, YR_tilde, priorvalue, max_ite
         b_mat = sigma * (KrU_T @ rhs_mat)
         b = b_mat.ravel(order='F')
         #---------- u-update ----------
-        A_op = LinearOperator((R*M), (R*M), matvec=lambda v: global_operator(v, mask_matrixT, KrU, KrU_T, Qu, psi, sigma, R, M))
+        A_op = linalg.LinearOperator((R*M), (R*M), matvec=lambda v: global_operator(v, mask_matrixT, KrU, KrU_T, Qu, psi, sigma, R, M))
         u_vec, info = linalg.cg(A_op, b, x0 = x0_flat, atol = 1e-4, maxiter = max_iter)
     
         #---------- z-update (proximal mapping) ----------
@@ -108,12 +170,48 @@ def global_admm(Qu, psi, sigma, KrU, mask_matrixT, YR_tilde, priorvalue, max_ite
     return u_vec, z_vec, theta_flat, info
     
 def local_operator(vec, pos_obs, Kd, Kt, Ks, lambda_, d1, d2, d3):
+    """
+    Constructs linear operator for local ADMM algorithm.
+
+    Args:
+        vec: input vector
+        pos_obs: indices of observed entries
+        Kd, Kt, Ks: covariance matrices for local component in each dimension
+        lambda_: local ADMM regularisation
+        d1, d2, d3: dimensions of tensor
+        
+    Returns:
+        Ap[pos_obs] + lambda_ * vec: linear operator
+    """
     x = np.zeros(d1 * d2 * d3)
     x[pos_obs] = vec
     Ap = kronecker_mvm(Kd, Kt, Ks, x, d1, d2, d3)
     return Ap[pos_obs] + lambda_ * vec
 
 def local_admm(lambda_, priorvalue, a, v, Kd, Kt, Ks, pos_obs, sum_obs, YR_tilde, mask_matrixT, max_iter, tau, total_data):
+    """
+    Local ADMM algorithm
+
+    Args:
+        lambda_: local ADMM regularisation
+        priorvalue: initial value for rtensor
+        a: initial value for auxiliary variable
+        v: initial value for lagrangian multiplier
+        Kd, Kt, Ks: covariance matrix for local component in each dimension
+        pos_obs: indices of observed entries
+        sum_obs: number of observed entries
+        YR_tilde: input tensor
+        mask_matrixT: mask matrix transposed
+        max_iter: maximum number of iterations 
+        tau: quantile parameter
+        total_data: total number of data entries
+
+    Returns:
+        r_obs = updated residual for observed entries
+        a_vec = updated auxiliary variable
+        v_vec = updated lagrangian multiplier
+        info = CG convergence information
+    """
     d1, d2, d3 = YR_tilde.shape
     Y_obs = (YR_tilde.ravel(order = 'F'))[pos_obs]
     r = priorvalue.copy()
@@ -128,7 +226,7 @@ def local_admm(lambda_, priorvalue, a, v, Kd, Kt, Ks, pos_obs, sum_obs, YR_tilde
         b = np.zeros(N)
         b[pos_obs] = lambda_ * rhs_mat
         #---------- r-update ----------
-        ar = LinearOperator((N, N), matvec=lambda v: local_operator(v, pos_obs, Kd, Kt, Ks, lambda_, d1, d2, d3))
+        ar = linalg.LinearOperator((N, N), matvec=lambda v: local_operator(v, pos_obs, Kd, Kt, Ks, lambda_, d1, d2, d3))
         r_init = np.zeros(N)
         r_vec, info = linalg.cg(ar, b, x0 = r_init, atol = 1e-4, maxiter = max_iter)
 
@@ -154,6 +252,33 @@ def local_admm(lambda_, priorvalue, a, v, Kd, Kt, Ks, pos_obs, sum_obs, YR_tilde
     return r_obs, a_vec, v_vec, info
 
 def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, varianceR: list, tapering_range, d_maternU, d_maternR, R, psi, sigma, lambda_, tau, maxiter, K0, epsilon):
+    """
+    QKTF for an arbitrary tensor.
+    
+    Args:
+        I: Input tensor (arbitrary dimension)
+        Omega: Binary mask (same shape as I)
+        lengthscaleU: List of lengthscales for each dimension (reference for comparing dimensions)
+        lengthscaleR: List of lengthscales for each dimension - local component (reference for comparing dimensions)
+        varianceU: List of variances for each dimension - global
+        varianceR: List of variances for each dimension - local
+        tapering_range: Tapering range for local component
+        d_maternU: Degree of Matern kernel for global
+        d_maternR: Degree of Matern kernel for local
+        R: Tensor rank - pre-specified through CP decomposition
+        psi: regularisation for global component
+        sigma: global ADMM penalty
+        lambda_: local ADMM penalty
+        tau: quantile parameter
+        maxiter: maximum number of iterations
+        K0: number of iterations before local component is updated
+        epsilon: convergence criterion
+
+    Returns:
+        Xori: recovered tensor
+        rtensor + np.mean(train_matrix): local component of recovery
+        M + np.mean(train_matrix): global component of recovery
+    """
     N = I.shape
     N = numpy.array(N)
     D = len(N)
@@ -204,8 +329,8 @@ def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, vari
     #---------- Initialisations ----------
     X = T
     X[pos_miss] = T.sum() / num_obs
-    theta = [np.zeros(np.sum(mask_matrix[d])) for d in range(D)] # Initialise theta as 0
-    z = [np.zeros(np.sum(mask_matrix[d])) for d in range(D)] # Initialise z as 0
+    theta = [np.zeros(int(np.sum(mask_matrix[d]))) for d in range(D)] # Initialise theta as 0
+    z = [np.zeros(int(np.sum(mask_matrix[d]))) for d in range(D)] # Initialise z as 0
     U = [np.zeros((R, N[d])) for d in range(D)] # Initialise latent matrices to 0
     rtensor = np.zeros(N) # Initialises r to 0
     y = np.zeros(N) # Initialises y to 0
