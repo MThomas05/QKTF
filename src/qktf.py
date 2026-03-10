@@ -119,24 +119,6 @@ def kronecker_covariances(Kr, vec, shape):
     
     return x.ravel(order = 'F')
 
-
-def kronecker_mvm(K3, K2, K1, vec, d1, d2, d3):
-    """
-    Performs kronecker matrix-vector multiplication for three matrices.
-
-    Args:
-        K3, K2, K1: matrices in kronecker product
-        vec: vector to be multiplied
-        d1, d2, d3: dimensions of original tensor
-    
-    Returns:
-        temp3.ravel(order = 'F'): result of kronecker matrix-vector multiplication
-    """
-    temp1 = (K1 @ vec.reshape(d1, d2, d3, order = 'F').reshape(d1, -1)).reshape(d1, d2, d3)
-    temp2 = (K2 @ temp1.transpose(1, 0, 2).reshape(d2, -1)).reshape(d2, d1, d3).transpose(1, 0, 2)
-    temp3 = (K3 @ temp2.transpose(2, 0, 1).reshape(d3, -1)).reshape(d3, d1, d2).transpose(1, 2, 0)
-    return temp3.ravel(order = 'F')
-
 def prox_map(xi, alpha, tau):
         """
         Proximal mapping for quantile regression.
@@ -232,7 +214,7 @@ def global_admm(Qu, psi, sigma, KrU, mask_matrixT, YR_tilde, priorvalue, max_ite
 
     return u_vec, z_vec, theta_flat, info
     
-def local_operator(vec, pos_obs, Kd, Kt, Ks, lambda_, d1, d2, d3):
+def local_operator(vec, pos_obs, Kr, lambda_, shape):
     """
     Constructs linear operator for local ADMM algorithm.
 
@@ -246,12 +228,12 @@ def local_operator(vec, pos_obs, Kd, Kt, Ks, lambda_, d1, d2, d3):
     Returns:
         Ap[pos_obs] + lambda_ * vec: linear operator
     """
-    x = np.zeros(d1 * d2 * d3)
+    x = np.zeros(shape)
     x[pos_obs] = vec
-    Ap = kronecker_mvm(Kd, Kt, Ks, x, d1, d2, d3)
+    Ap = kronecker_covariances(Kr, x, shape)
     return Ap[pos_obs] + lambda_ * vec
 
-def local_admm(lambda_, priorvalue, a, v, Kd, Kt, Ks, pos_obs, sum_obs, YR_tilde, mask_matrixT, max_iter, tau, total_data):
+def local_admm(lambda_, priorvalue, a, v, Kr, pos_obs, sum_obs, YR_tilde, mask_matrixT, max_iter, tau, total_data):
     """
     Local ADMM algorithm
 
@@ -275,12 +257,12 @@ def local_admm(lambda_, priorvalue, a, v, Kd, Kt, Ks, pos_obs, sum_obs, YR_tilde
         v_vec = updated lagrangian multiplier
         info = CG convergence information
     """
-    d1, d2, d3 = YR_tilde.shape
+    shape = YR_tilde.shape
     Y_obs = (YR_tilde.ravel(order = 'F'))[pos_obs]
     r = priorvalue.copy()
     a_vec = a.ravel(order = 'F')
     v_vec = v.ravel(order = 'F')
-    N = d1 * d2 * d3
+    N = np.prod(shape)
 
     #---------- admm ----------
     for j in range(max_iter):
