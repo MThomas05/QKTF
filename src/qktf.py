@@ -51,9 +51,9 @@ def fold(mat, dim, mode):
     Returns:
         np.moveaxis(np.reshape(mat, list(dim[index]), order = 'F'), 0, mode): folded tensor
     """
-    index = list() # defines new axis order - encodes which axes became rows
-    index.append(mode) # ensures 'mode' axis is first
-    for i in range(dim.shape[0]): # appends all other axes in order
+    index = list()
+    index.append(mode) 
+    for i in range(dim.shape[0]): 
         if i != mode:
             index.append(i)
     return np.moveaxis(np.reshape(mat, list(dim[index]), order = 'F'), 0, mode)
@@ -335,13 +335,13 @@ def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, vari
     maxP = float(np.max(I))
 
     # Validate inputs
-    assert len(lengthscaleU) == D, f"lengthscaleU must have length {D}"
-    assert len(lengthscaleR) == D, f"lengthscaleR must have length {D}"
-    assert len(varianceU) == D, f"varianceU must have length {D}"
-    assert len(varianceR) == D, f"varianceR must have length {D}"
-    assert I.shape == Omega.shape, f"I and Omega must have the same shape, but got {I.shape} and {Omega.shape}"
-    assert R > 0, f"Rank R must be positive, but got {R}"
-    assert 0 < tau < 1, f"Quantile parameter tau must be in (0, 1), but got {tau}"
+    assert len(lengthscaleU) == D
+    assert len(lengthscaleR) == D
+    assert len(varianceU) == D
+    assert len(varianceR) == D
+    assert I.shape == Omega.shape
+    assert R > 0
+    assert 0 < tau < 1
 
     # ========== Pre-processing ==========
 
@@ -354,7 +354,7 @@ def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, vari
     mask_matrix = [unfold(Omega, d) for d in range(D)]
     mask_matrixT = [mask_matrix[d].T for d in range(D)]
     mask_flat = [mask_matrix[d].ravel(order = 'F') for d in range(D)]
-    pos_obs = [np.where(mask_flat[d] == 1) for d in range(D)]
+    pos_obs = [np.where(mask_flat[d] == 1)[0] for d in range(D)]
 
     # Data centering
     train_matrix = I * Omega
@@ -407,6 +407,7 @@ def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, vari
     X[pos_miss] = M[pos_miss] + rtensor[pos_miss]
 
     d_all = np.arange(D) # array of all dimensions
+    last_ten = X.copy()
 
     # ========== Main algorithm iterations ==========
     if verbose:
@@ -460,7 +461,6 @@ def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, vari
 
        # Convergence checks
         train_norm = np.linalg.norm(T)
-        last_ten = X.copy()
         tol = np.linalg.norm((X - last_ten)) / train_norm
 
         if verbose and hasattr(pbar, 'set_postfix'):
@@ -491,16 +491,16 @@ def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, vari
             'tolerance': tol,
             'converge': tol < epsilon,
 
-            'bias_obs': np.mean(obs_entries - recovered_obs),
-            'variance': np.var(obs_entries - recovered_obs),
-            'rmse': np.sqrt(np.mean((obs_entries - recovered_obs) ** 2)),
-            'mse': np.mean((obs_entries - recovered_obs) ** 2),
-            'mae': np.mean(np.abs(obs_entries - recovered_obs)),
-            'global_contribution': np.linalg.norm(M_component) / np.linalg.norm(I_recovery),
-            'local_contribution': np.linalg.norm(R_component) / np.linalg.norm(I_recovery),
-            'residual_min': np.min(obs_entries - recovered_obs),
-            'residual_max': np.max(obs_entries - recovered_obs),
-            'residual_median': np.median(obs_entries - recovered_obs)
+            'bias_obs': float(np.mean(obs_entries - recovered_obs).get()),
+            'variance': float(np.var(obs_entries - recovered_obs).get()),
+            'rmse': float(np.sqrt(np.mean((obs_entries - recovered_obs) ** 2)).get()),
+            'mse': float(np.mean((obs_entries - recovered_obs) ** 2).get()),
+            'mae': float(np.mean(np.abs(obs_entries - recovered_obs)).get()),
+            'global_contribution': float(np.linalg.norm(M_component) / np.linalg.norm(I_recovery).get()),
+            'local_contribution': float(np.linalg.norm(R_component) / np.linalg.norm(I_recovery).get()),
+            'residual_min': float(np.min(obs_entries - recovered_obs).get()),
+            'residual_max': float(np.max(obs_entries - recovered_obs).get()),
+            'residual_median': float(np.median(obs_entries - recovered_obs).get())
         }
 
     if verbose:
