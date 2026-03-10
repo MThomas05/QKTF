@@ -2,6 +2,7 @@ import cupy as np
 import numpy
 from cupyx.scipy.sparse import linalg, eye, csr_matrix
 from cupyx.scipy.linalg import khatri_rao
+import verbose
 
 def cov_matern(d, loghyper, x):
     ell = np.exp(loghyper[0])
@@ -56,6 +57,25 @@ def fold(mat, dim, mode):
         if i != mode:
             index.append(i)
     return np.moveaxis(np.reshape(mat, list(dim[index]), order = 'F'), 0, mode)
+
+def build_khatri_rao(U, dims):
+    """
+    Builds khatri-rao product for arbitrary dimension.
+    
+    Args:
+        U: list of latent matrices in each dimension
+        d: number of dimensions
+    
+    Returns:
+        khatri-rao product
+    """
+    if len(dims) == 1:
+        return U[dims[0]]
+    else:
+        result = U[dims[-1]]
+        for i in reversed(dims[:-1]):
+            return khatri_rao(U[i], result)
+        return result
 
 def kronecker_mvm(K3, K2, K1, vec, d1, d2, d3):
     """
@@ -279,28 +299,50 @@ def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, vari
         rtensor + np.mean(train_matrix): local component of recovery
         M + np.mean(train_matrix): global component of recovery
     """
+    # ========== Setup ==========
     N = I.shape
     N = numpy.array(N)
     D = len(N)
     total_data = numpy.prod(N)
     maxP = float(np.max(I))
 
-    #---------- Binary indicator matrix ----------
+    # Validate inputs
+    assert len(lengthscaleU) == D, f"lengthscaleU must have length {D}, it's got {len{lengthscaleU}}"
+    assert len(lengthscaleR) == D, f"lengthscaleR must have length {D}, it's got {len{lengthscaleR}}"
+    assert len(varianceU) == D, f"varianceU must have length {D}, it's got {len{varianceU}}"
+    assert len(varianceR) == D, f"varianceR must have length {D}, it's got {len{varianceR}}"
+    assert I.shape == Omega.shape, f"I and Omega must have the same shape, but got {I.shape} and {Omega.shape}"
+    assert R > 0, f"Rank R must be positive, but got {R}"
+    assert 0 < tau < 1, f"Quantile parameter tau must be in (0, 1), but got {tau}"
+
+    # ========== Pre-processing ==========
+
+    # Binary indicator matrix
     Omega = Omega.astype(bool)
     pos_miss = np.where(Omega == 0)
-    num_obs = np.sum(Omega)
+    num_obs = int(np.sum(Omega))
+
+    # Mask construction
     mask_matrix = [unfold(Omega, d) for d in range(D)]
+    mask_matrixT = [mask_matrix[d].T for d in range(D)]
+    mask_flat = [mask_matrix[d].ravel(order = 'F') for d in range(D)]
+    pos_obs = [np.where(mask_flat[d] == 1) for d in range(D)]
+
+    # Data centering
     idx = np.sum(mask_matrix[2], axis = 0) > 0
     train_matrix = I * Omega
     train_matrix = train_matrix[train_matrix > 0]
     Isubmean = I - np.mean(train_matrix)
     T = Isubmean * Omega
-    mask_matrixT = [mask_matrix[d].T for d in range(D)]
-    mask_flat = [mask_matrix[d].ravel(order = 'F') for d in range(D)]
-    pos_obs = [np.where(mask_flat[d] == 1) for d in range(D)]
 
-    #---------- Covariance constraints ----------
-    hyper_Ku = [None] * D
+    # ========== Build covariance matrices ==========
+    hyper_Ku, hyper_Kr = [None] * D, [None] * D
+    Ku, Kr = [None] * D, [None] * D
+    invKu = [None] * D
+
+    if verbose:
+        print("Building covariance matrices...")
+
     hyper_Ku[0] = [np.log(lengthscaleU[0]), np.log(varianceU[0])]
     hyper_Ku[1] = [np.log(lengthscaleU[1]), np.log(varianceU[1])]
     
