@@ -2,7 +2,7 @@ import cupy as np
 import numpy
 from cupyx.scipy.sparse import linalg, eye, csr_matrix
 from cupyx.scipy.linalg import khatri_rao
-import verbose
+from tqdm import tqdm
 
 def cov_matern(d, loghyper, x):
     ell = np.exp(loghyper[0])
@@ -211,7 +211,7 @@ def global_admm(Qu, psi, sigma, KrU, mask_matrixT, YR_tilde, priorvalue, max_ite
         res_dual = sigma * KrU_T @ (mask_matrixT * (z_vec - z_prev))
         eps_pri = np.sqrt(sum_obs) * 1e-4 + 1e-4 * np.maximum(np.maximum(np.linalg.norm(u_vec), np.linalg.norm(z)), np.linalg.norm(YR_tilde))
         eps_dual = np.sqrt(total_data) * 1e-4 + 1e-4 * np.linalg.norm((mask_matrixT @ KrU_T) * theta)
-        
+
         if np.linalg.norm(res_pri) <= eps_pri and np.linalg.norm(res_dual) <= eps_dual:
             break    
 
@@ -236,7 +236,7 @@ def local_operator(vec, pos_obs, Kr, lambda_, shape):
     Ap = kronecker_covariances(Kr, x, shape)
     return Ap[pos_obs] + lambda_ * vec
 
-def local_admm(lambda_, priorvalue, a, v, Kr, pos_obs, sum_obs, YR_tilde, mask_matrixT, max_iter, tau, total_data):
+def local_admm(lambda_, priorvalue, a, v, Kr, pos_obs, sum_obs, YR_tilde, max_iter, tau, total_data):
     """
     Local ADMM algorithm
 
@@ -300,7 +300,7 @@ def local_admm(lambda_, priorvalue, a, v, Kr, pos_obs, sum_obs, YR_tilde, mask_m
 
     return r_obs, a_vec, v_vec, info
 
-def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, varianceR: list, tapering_range, d_maternU, d_maternR, R, psi, sigma, lambda_, tau, maxiter, K0, epsilon):
+def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, varianceR: list, tapering_range, d_maternU, d_maternR, R, psi, sigma, lambda_, tau, maxiter, K0, epsilon, verbose=True):
     """
     QKTF for an arbitrary tensor.
     
@@ -324,9 +324,9 @@ def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, vari
         epsilon: convergence criterion
 
     Returns:
-        Xori: recovered tensor
-        rtensor + np.mean(train_matrix): local component of recovery
-        M + np.mean(train_matrix): global component of recovery
+        I_recovery: recovered tensor
+        R_component: local component of recovery
+        M_component: global component of recovery
     """
     # ========== Setup ==========
     N = I.shape
@@ -336,10 +336,10 @@ def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, vari
     maxP = float(np.max(I))
 
     # Validate inputs
-    assert len(lengthscaleU) == D, f"lengthscaleU must have length {D}, it's got {len{lengthscaleU}}"
-    assert len(lengthscaleR) == D, f"lengthscaleR must have length {D}, it's got {len{lengthscaleR}}"
-    assert len(varianceU) == D, f"varianceU must have length {D}, it's got {len{varianceU}}"
-    assert len(varianceR) == D, f"varianceR must have length {D}, it's got {len{varianceR}}"
+    assert len(lengthscaleU) == D, f"lengthscaleU must have length {D}"
+    assert len(lengthscaleR) == D, f"lengthscaleR must have length {D}"
+    assert len(varianceU) == D, f"varianceU must have length {D}"
+    assert len(varianceR) == D, f"varianceR must have length {D}"
     assert I.shape == Omega.shape, f"I and Omega must have the same shape, but got {I.shape} and {Omega.shape}"
     assert R > 0, f"Rank R must be positive, but got {R}"
     assert 0 < tau < 1, f"Quantile parameter tau must be in (0, 1), but got {tau}"
@@ -358,7 +358,6 @@ def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, vari
     pos_obs = [np.where(mask_flat[d] == 1) for d in range(D)]
 
     # Data centering
-    idx = np.sum(mask_matrix[2], axis = 0) > 0
     train_matrix = I * Omega
     train_matrix = train_matrix[train_matrix > 0]
     Isubmean = I - np.mean(train_matrix)
@@ -372,98 +371,132 @@ def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, vari
     if verbose:
         print("Building covariance matrices...")
 
-    hyper_Ku[0] = [np.log(lengthscaleU[0]), np.log(varianceU[0])]
-    hyper_Ku[1] = [np.log(lengthscaleU[1]), np.log(varianceU[1])]
-    
-    hyper_Kr = [None] * D
-    hyper_Kr[0] = [np.log(lengthscaleR[0]), np.log(varianceR[0]), np.log(tapering_range)]
-    hyper_Kr[1] = [np.log(lengthscaleR[1]), np.log(varianceR[1]), np.log(tapering_range)]
+    for d in range(D):
+        x = np.arange(1, N[d] + 1)
 
-    Ku, Kr = [None] * D, [None] * D
-    invKu = [None] * D
+        # Global covariance
+        hyper_Ku[d] = [np.log(lengthscaleU[d]), np.log(varianceU[d])]
+        Ku[d] = cov_matern(d_maternU, hyper_Ku[d], x)
+        invKu[d] = np.linalg.inv(Ku[d])
 
-    x = np.arange(1, N[0] + 1)
-    Ku[0] = cov_matern(d_maternU, hyper_Ku[0], x)
-    invKu[0] = np.linalg.inv(Ku[0])
-    TaperM = bohman([hyper_Kr[0][2]], x)
-    Kr[0] = csr_matrix(cov_matern(d_maternR, hyper_Kr[0][:2], x) * TaperM)
+        # Local covariance
+        hyper_Kr[d] = [np.log(lengthscaleR[d]), np.log(varianceR[d]), np.log(tapering_range)]
+        TaperM = bohman([hyper_Kr[d]], x)
+        Kr[d] = csr_matrix(cov_matern(d_maternR, hyper_Kr[d][:2], x) * TaperM)
 
-    x = np.arange(1, N[1] + 1)
-    Ku[1] = cov_matern(d_maternU, hyper_Ku[1], x)
-    invKu[1] = np.linalg.inv(Ku[1])
-    TaperM = bohman([hyper_Kr[1][2]], x)
-    Kr[1] = csr_matrix(cov_matern(d_maternR, hyper_Kr[1][:2], x) * TaperM)
-
-    invKu[2] = csr_matrix(eye(N[2]))
-    Kr[2] = csr_matrix(eye(N[2]))
-
-    #---------- Initialisations ----------
+    # ========== Initialisation for ADMM iterations ==========
     X = T
     X[pos_miss] = T.sum() / num_obs
-    theta = [np.zeros(int(np.sum(mask_matrix[d]))) for d in range(D)] # Initialise theta as 0
-    z = [np.zeros(int(np.sum(mask_matrix[d]))) for d in range(D)] # Initialise z as 0
-    U = [np.zeros((R, N[d])) for d in range(D)] # Initialise latent matrices to 0
-    rtensor = np.zeros(N) # Initialises r to 0
-    y = np.zeros(N) # Initialises y to 0
-    v = np.zeros(total_data) # Initialises v to 0
+
+    # Variable initialisation
+    theta = [np.zeros(int(np.sum(mask_matrix[d]))) for d in range(D)]
+    z = [np.zeros(int(np.sum(mask_matrix[d]))) for d in range(D)] 
+    U = [np.zeros((R, N[d])) for d in range(D)] 
+
+    rtensor = np.zeros(N) 
+    y = np.zeros(N) 
+    v = np.zeros(total_data) 
     a = np.zeros(total_data)
+
     Uvector = [U[d].ravel(order = 'F') for d in range(D)]
     UTvector = [U[d].T.ravel(order = 'F') for d in range(D)]
     rvector = rtensor.ravel(order='F')
     rvector_temp = rtensor.ravel(order = 'F')
-    M_unfold1 = U[0] @ khatri_rao(U[2], U[1]).T ###
-    M = fold(M_unfold1, N, 0) ###
-    X[pos_miss] = M[pos_miss] + rtensor[pos_miss]
-    d_all = np.arange(D) # array of all dimensions
-    train_norm = np.linalg.norm(T)
-    last_ten = T.copy()
-    psnrf = np.zeros(maxiter)
-    approxU = [None] * D
-    iter = 0
 
-    #-------- Algorithm iterations --------
-    while True:
-        Gtensor = X - rtensor # G_Omega in latent matrix optimisation
+    # Initial reconstruction
+    M = reconstruct_tensor(U, N)
+    X[pos_miss] = M[pos_miss] + rtensor[pos_miss]
+
+    d_all = np.arange(D) # array of all dimensions
+
+    # ========== Main algorithm iterations ==========
+    if verbose:
+        pbar = tqdm(total=range(maxiter), desc="QKTF iterations")
+    else:
+        pbar = range(maxiter)
+
+    for iter in pbar:
+
+        # Update global component
+        Gtensor = X - rtensor 
         Gtensor_mask = Gtensor * Omega
 
         for d in range(D):
             dsub = np.delete(d_all, d)
             dsub = np.array(dsub)
-            KrU = khatri_rao(U[dsub[1]], U[dsub[0]])
+            KrU = build_khatri_rao(U, dsub)
             HG = KrU.T @ unfold(Gtensor_mask, d).T
-            UTvector[d], z[d], theta[d], info = global_admm(invKu[d], psi, sigma, KrU, mask_matrixT[d], HG, UTvector[d], 100, tau, z[d], theta[d], num_obs, total_data)
+
+            UTvector[d], z[d], theta[d], info = global_admm(
+                invKu[d], psi, sigma, KrU, mask_matrixT[d], HG, UTvector[d], 100, tau, z[d], theta[d], num_obs, total_data)
             U[d] = (UTvector[d].reshape(R, N[d], order = 'F')).T
-        M_unfold1 = U[0] @ (khatri_rao(U[2], U[1]).T)
-        M = fold(M_unfold1, N, 0)
+
+        # Reconstruct global component
+        M = reconstruct_tensor(U, N)    
         X[pos_miss] = M[pos_miss] + rtensor[pos_miss]
+
+        # Update local component
         if iter >= K0:
             Ltensor = X - M
             Ltensor_mask = Ltensor * Omega
-            rvector_temp[pos_obs[0]], a[pos_obs[0]], v[pos_obs[0]], info = local_admm(lambda_, rvector_temp[pos_obs[0]], a[pos_obs[0]], v[pos_obs[0]], Kr[2], Kr[1], Kr[0], pos_obs[0], num_obs, Ltensor_mask, mask_matrixT, 100, tau, total_data)
-            rvector = kronecker_mvm(Kr[2], Kr[1], Kr[0], rvector_temp, N[0], N[1], N[2])
+
+            rvector_temp[pos_obs[0]], a[pos_obs[0]], v[pos_obs[0]], info = local_admm(
+                lambda_, rvector_temp[pos_obs[0]], a[pos_obs[0]], v[pos_obs[0]], Kr, pos_obs[0], num_obs, Ltensor_mask, 100, tau, total_data)
+            
+            rvector = kronecker_covariances(Kr, rvector_temp, N)
             rtensor = rvector.reshape(N, order = 'F')
-            rtensor_unfold3 = unfold(rtensor, 2)
-            rtensor_unfold3_obs = rtensor_unfold3[:, idx]
-            Kr[2] = np.cov(rtensor_unfold3_obs)
+
+            # Updating local covariances
+            if D >= 2:
+                rtensor_unfold_last = unfold(rtensor, D-1)
+                idx_last = np.sum(mask_matrix[D-1], axis = 0) > 0
+                rtensor_obs = rtensor_unfold_last[:, idx_last]
+                Kr[D-1] = np.cov(rtensor_obs)      
+            
         else:
             rtensor = np.zeros_like(rtensor)
-        
-        #---------- Diagnostics --------
+
+        # Update X
         X[pos_miss] = M[pos_miss] + rtensor[pos_miss]
-        Xori = X + np.mean(train_matrix)
-        Xrecovery = np.maximum(0, Xori)
-        Xrecovery = np.minimum(maxP, Xrecovery)
-        mseC1 = np.linalg.norm(I[:, :, 0].astype(float) - Xrecovery[:, :, 0], 'fro') ** 2 / (N[0] * N[1])
-        mseC2 = np.linalg.norm(I[:, :, 1].astype(float) - Xrecovery[:, :, 1], 'fro') ** 2 / (N[0] * N[1])
-        mseC3 = np.linalg.norm(I[:, :, 2].astype(float) - Xrecovery[:, :, 2], 'fro') ** 2 / (N[0] * N[1])
-        iter += 1
-        print(f"Epoch = {iter}")
+
+       # Convergence checks
+        train_norm = np.linalg.norm(T)
         tol = np.linalg.norm((X - last_ten)) / train_norm
         last_ten = X.copy()
-        if (tol < epsilon) or (iter >= maxiter):
-            break
 
-    return Xori, rtensor + np.mean(train_matrix), M + np.mean(train_matrix)
+        if verbose and hasattr(pbar, 'set_postfix'):
+            pbar.set_postfix({'tol': f"{tol:.4e}"})
+
+        if tol < epsilon:
+            if verbose:
+                if hasattr(pbar, 'set_postfix'):
+                    pbar.close()
+                print(f"Convergence achieved at iteration {iter} with tolerance {tol:.4e}")
+            break
+        
+        # ========== Diagnostics ==========
+        # Restoring mean
+        I_recovery = X + np.mean(train_matrix)
+        M_component = M + np.mean(train_matrix)
+        R_component = rtensor + np.mean(train_matrix)
+
+        obs_entries = I[Omega]
+        recovered_obs = I_recovery[Omega]
+        rmse_obs = np.sqrt(np.mean((obs_entries - recovered_obs) ** 2))
+        mse_obs = np.mean((obs_entries - recovered_obs) ** 2)
+        recovered_min = np.min(I_recovery)
+        recovered_max = np.max(I_recovery)
+
+        info = {
+            'iteration': iter,
+            'tolerance': tol,
+            'rmse_obs': rmse_obs,
+            'mse_obs': mse_obs,
+            'recovered_min': recovered_min,
+            'recovered_max': recovered_max
+        }
+
+    return I_recovery, M_component, R_component, info
 
 
 
