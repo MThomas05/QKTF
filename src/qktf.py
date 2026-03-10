@@ -76,6 +76,26 @@ def build_khatri_rao(U, dims):
         for i in reversed(dims[:-1]):
             return khatri_rao(U[i], result)
         return result
+    
+def reconstruct_tensor(U, shape):
+    """
+    Reconstructs tensor from CP for arbitrary dimension (used in global).
+
+    Args:
+        U: list of latent matrices
+        dims: number of dimensions
+        R: rank of CP decomposition
+
+    Returns:
+        M: reconstructed tensor 
+    """
+    dims = len(U)
+    N = numpy.array(shape)
+    dims_except_0 = np.arange(1, dims)
+    KrU = build_khatri_rao(U, dims_except_0)
+    M_unfold = U[0] @ KrU.T
+    M = fold(M_unfold, N, 0)
+    return M
 
 def kronecker_mvm(K3, K2, K1, vec, d1, d2, d3):
     """
@@ -382,8 +402,8 @@ def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, vari
     UTvector = [U[d].T.ravel(order = 'F') for d in range(D)]
     rvector = rtensor.ravel(order='F')
     rvector_temp = rtensor.ravel(order = 'F')
-    M_unfold1 = U[0] @ khatri_rao(U[2], U[1]).T
-    M = fold(M_unfold1, N, 0)
+    M_unfold1 = U[0] @ khatri_rao(U[2], U[1]).T ###
+    M = fold(M_unfold1, N, 0) ###
     X[pos_miss] = M[pos_miss] + rtensor[pos_miss]
     d_all = np.arange(D) # array of all dimensions
     train_norm = np.linalg.norm(T)
