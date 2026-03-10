@@ -97,6 +97,29 @@ def reconstruct_tensor(U, shape):
     M = fold(M_unfold, N, 0)
     return M
 
+def kronecker_covariances(Kr, vec, shape):
+    """
+    Creates kronecker product of covariances for local component.
+
+    Args:
+        Kr: list of covariance matrices
+        vec: input vector
+        shape: shape of original tensor
+
+    Returns:
+        result: kronecker product of covariances
+    """
+    D = len(shape)
+    x = vec.reshape(shape, order = 'F')
+
+    for d in range(D):
+        x_unfold = unfold(x, d)
+        x_unfold = Kr[d] @ x_unfold
+        x = fold(x_unfold, numpy.array(shape), d)
+    
+    return x.ravel(order = 'F')
+
+
 def kronecker_mvm(K3, K2, K1, vec, d1, d2, d3):
     """
     Performs kronecker matrix-vector multiplication for three matrices.
