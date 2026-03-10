@@ -186,29 +186,32 @@ def global_admm(Qu, psi, sigma, KrU, mask_matrixT, YR_tilde, priorvalue, max_ite
     theta_flat = theta.ravel(order = 'F')
     KrU_T = KrU.T
 
+    # ========== ADMM iterations ==========
     for j in range(max_iter):
         z_prev = z_flat.copy()
         rhs_mat = mask_matrixT * (YR_tilde - z - theta)
         b_mat = sigma * (KrU_T @ rhs_mat)
         b = b_mat.ravel(order='F')
-        #---------- u-update ----------
+
+        # latent matrix update
         A_op = linalg.LinearOperator((R*M), (R*M), matvec=lambda v: global_operator(v, mask_matrixT, KrU, KrU_T, Qu, psi, sigma, R, M))
         u_vec, info = linalg.cg(A_op, b, x0 = x0_flat, atol = 1e-4, maxiter = max_iter)
     
-        #---------- z-update (proximal mapping) ----------
+        # auxiliary variable update
         alpha = sum_obs * sigma
         eta = YR_flat - theta_flat - u_vec
 
         z_vec = prox_map(eta, alpha, tau)
     
-        #---------- x-update (lagrangian multiplier) ----------
+        # lagrangian multiplier update
         theta_flat = theta_flat + u_vec + z_vec - YR_flat
 
-        #---------- residuals ----------
+        # convergence criterion
         res_pri = u_vec + z_vec - (mask_matrixT * YR_flat)
         res_dual = sigma * KrU_T @ (mask_matrixT * (z_vec - z_prev))
         eps_pri = np.sqrt(sum_obs) * 1e-4 + 1e-4 * np.maximum(np.maximum(np.linalg.norm(u_vec), np.linalg.norm(z)), np.linalg.norm(YR_tilde))
         eps_dual = np.sqrt(total_data) * 1e-4 + 1e-4 * np.linalg.norm((mask_matrixT @ KrU_T) * theta)
+        
         if np.linalg.norm(res_pri) <= eps_pri and np.linalg.norm(res_dual) <= eps_dual:
             break    
 
@@ -262,30 +265,31 @@ def local_admm(lambda_, priorvalue, a, v, Kr, pos_obs, sum_obs, YR_tilde, mask_m
     r = priorvalue.copy()
     a_vec = a.ravel(order = 'F')
     v_vec = v.ravel(order = 'F')
-    N = np.prod(shape)
+    N = int(np.prod(shape))
 
-    #---------- admm ----------
+    # ========== ADMM iterations ==========
     for j in range(max_iter):
         a_prev = a_vec.copy()
         rhs_mat = Y_obs - a_vec - v_vec
         b = np.zeros(N)
         b[pos_obs] = lambda_ * rhs_mat
-        #---------- r-update ----------
-        ar = linalg.LinearOperator((N, N), matvec=lambda v: local_operator(v, pos_obs, Kd, Kt, Ks, lambda_, d1, d2, d3))
+
+        # r-update
+        ar = linalg.LinearOperator((N, N), matvec=lambda v: local_operator(v, pos_obs, Kr, lambda_, shape))
         r_init = np.zeros(N)
         r_vec, info = linalg.cg(ar, b, x0 = r_init, atol = 1e-4, maxiter = max_iter)
 
-        #---------- z-update ---------
+        # auxiliary variable update
         r_obs = r_vec[pos_obs]
         zeta = Y_obs - v_vec - r_obs
         alpha = sum_obs * lambda_
 
         a_vec = prox_map(zeta, alpha, tau)
 
-        #---------- x-update ----------
+        # lagrangian multiplier update
         v_vec = v_vec + r_obs + a_vec - Y_obs
 
-        #---------- convergence criterion ----------
+        # convergence criterion
         res_pri = r_obs + a_vec - Y_obs
         res_dual = lambda_ * (a_vec - a_prev)
         eps_pri = np.sqrt(sum_obs) * 1e-4 + 1e-4 * np.maximum(np.maximum(np.linalg.norm(r_obs), np.linalg.norm(a_vec)), np.linalg.norm(Y_obs))
