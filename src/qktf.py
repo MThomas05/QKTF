@@ -74,7 +74,7 @@ def build_khatri_rao(U, dims):
     else:
         result = U[dims[-1]]
         for i in reversed(dims[:-1]):
-            return khatri_rao(U[i], result)
+            result = khatri_rao(U[i], result)
         return result
     
 def reconstruct_tensor(U, shape):
@@ -276,8 +276,7 @@ def local_admm(lambda_, priorvalue, a, v, Kr, pos_obs, sum_obs, YR_tilde, max_it
 
         # r-update
         ar = linalg.LinearOperator((N, N), matvec=lambda v: local_operator(v, pos_obs, Kr, lambda_, shape))
-        r_init = np.zeros(N)
-        r_vec, info = linalg.cg(ar, b, x0 = r_init, atol = 1e-4, maxiter = max_iter)
+        r_vec, info = linalg.cg(ar, b, x0 = np.zeros(N), atol = 1e-4, maxiter = max_iter)
 
         # auxiliary variable update
         r_obs = r_vec[pos_obs]
@@ -411,7 +410,7 @@ def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, vari
 
     # ========== Main algorithm iterations ==========
     if verbose:
-        pbar = tqdm(total=range(maxiter), desc="QKTF iterations")
+        pbar = tqdm(range(maxiter), desc="QKTF iterations")
     else:
         pbar = range(maxiter)
 
@@ -461,8 +460,8 @@ def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, vari
 
        # Convergence checks
         train_norm = np.linalg.norm(T)
-        tol = np.linalg.norm((X - last_ten)) / train_norm
         last_ten = X.copy()
+        tol = np.linalg.norm((X - last_ten)) / train_norm
 
         if verbose and hasattr(pbar, 'set_postfix'):
             pbar.set_postfix({'tol': f"{tol:.4e}"})
@@ -488,13 +487,43 @@ def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, vari
         recovered_max = np.max(I_recovery)
 
         info = {
-            'iteration': iter,
+            'iteration': iter + 1,
             'tolerance': tol,
-            'rmse_obs': rmse_obs,
-            'mse_obs': mse_obs,
-            'recovered_min': recovered_min,
-            'recovered_max': recovered_max
+            'converge': tol < epsilon,
+
+            'bias_obs': np.mean(obs_entries - recovered_obs),
+            'variance': np.var(obs_entries - recovered_obs),
+            'rmse': np.sqrt(np.mean((obs_entries - recovered_obs) ** 2)),
+            'mse': np.mean((obs_entries - recovered_obs) ** 2),
+            'mae': np.mean(np.abs(obs_entries - recovered_obs)),
+            'global_contribution': np.linalg.norm(M_component) / np.linalg.norm(I_recovery),
+            'local_contribution': np.linalg.norm(R_component) / np.linalg.norm(I_recovery),
+            'residual_min': np.min(obs_entries - recovered_obs),
+            'residual_max': np.max(obs_entries - recovered_obs),
+            'residual_median': np.median(obs_entries - recovered_obs)
         }
+
+    if verbose:
+        print(f"QKTF Completion Summary")
+        print(f"Convergence: {'Achieved' if tol < epsilon else 'Not Achieved'}")
+        print(f"Iterations: {info['iteration']}")
+        print(f"Final Tolerance: {info['tolerance']:.4e}")
+
+        print(f"\n Diagnostics:")
+        print(f"Bias (Observed): {info['bias_obs']:.4e}")
+        print(f"Variance (Observed): {info['variance']:.4e}")
+        print(f"RMSE (Observed): {info['rmse']:.4e}")
+        print(f"MSE (Observed): {info['mse']:.4e}")
+        print(f"MAE (Observed): {info['mae']:.4e}")
+
+        print(f"\n Contribution Analysis:")
+        print(f"Global Component Contribution: {info['global_contribution']:.4%}")
+        print(f"Local Component Contribution: {info['local_contribution']:.4%}")
+
+        print(f"\n Residual Analysis:")
+        print(f"Residual Min (Observed): {info['residual_min']:.4e}")
+        print(f"Residual Max (Observed): {info['residual_max']:.4e}")
+        print(f"Residual Median (Observed): {info['residual_median']:.4e}")
 
     return I_recovery, M_component, R_component, info
 
