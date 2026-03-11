@@ -218,7 +218,10 @@ def global_admm(Qu, psi, sigma, KrU, mask_matrixT, YR_tilde, priorvalue, max_ite
         if np.linalg.norm(res_pri) <= eps_pri and np.linalg.norm(res_dual) <= eps_dual:
             break    
 
-    return u_vec, z_vec, theta_flat, gcg_info
+        z_reshaped = z_flat.reshape(M, R, order = 'F')
+        theta_reshaped = theta_flat.reshape(M, R, order = 'F')
+
+    return u_vec, z_reshaped, theta_reshaped, gcg_info
     
 def local_operator(vec, pos_obs, Kr, lambda_, shape):
     """
@@ -299,6 +302,9 @@ def local_admm(lambda_, priorvalue, a, v, Kr, pos_obs, sum_obs, YR_tilde, max_it
 
         if np.linalg.norm(res_pri) <= eps_pri and np.linalg.norm(res_dual) <= eps_dual:
             break
+
+        a_reshaped = a_vec.reshape(shape, order = 'F')
+        v_reshaped = v_vec.reshape(shape, order = 'F')
 
     return r_obs, a_vec, v_vec, lcg_info
 
@@ -465,11 +471,12 @@ def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, vari
        # Convergence checks
         train_norm = np.linalg.norm(T)
         tol = np.linalg.norm((X - last_ten)) / train_norm
+        last_ten = X.copy()
 
         if verbose and hasattr(pbar, 'set_postfix'):
             pbar.set_postfix({'tol': f"{tol:.4e}"})
 
-        if tol < epsilon:
+        if 0 < iter < maxiter and tol < epsilon:
             if verbose:
                 if hasattr(pbar, 'set_postfix'):
                     pbar.close()
