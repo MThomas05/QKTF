@@ -194,7 +194,7 @@ def global_admm(Qu, psi, sigma, KrU, mask_matrixT, YR_tilde, priorvalue, max_ite
     # ========== ADMM iterations ==========
     for j in range(max_iter):
         z_prev = z_flat.copy()
-        rhs_mat = YR_tilde - z - theta
+        rhs_mat = YR_tilde - z_flat - theta_flat
         b_mat = sigma * (KrU_T @ rhs_mat)
         b = b_mat.ravel(order='F')
 
@@ -393,8 +393,8 @@ def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, vari
     X[pos_miss] = T.sum() / num_obs
 
     # Variable initialisation
-    theta = [np.zeros(N[d]) for d in range(D)]
-    z = [np.zeros(N[d]) for d in range(D)] 
+    z = [np.zeros((N[d], R)) for d in range(D)]
+    theta = [np.zeros((N[d], R)) for d in range(D)]
     U = [np.zeros((N[d], R)) for d in range(D)] 
 
     rtensor = np.zeros(N) 
@@ -430,10 +430,10 @@ def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, vari
             dsub = np.delete(d_all, d)
             dsub = np.array(dsub)
             KrU = build_khatri_rao(U, dsub)
-            HG = KrU.T @ unfold(Gtensor_mask, d).T
+            Gtensor_unfold = unfold(Gtensor_mask, d).T
 
             UTvector[d], z[d], theta[d], info = global_admm(
-                invKu[d], psi, sigma, KrU, mask_matrixT[d], HG, UTvector[d], 100, tau, z[d], theta[d], num_obs, total_data)
+                invKu[d], psi, sigma, KrU, mask_matrixT[d], Gtensor_unfold, UTvector[d], 100, tau, z[d], theta[d], num_obs, total_data)
             U[d] = (UTvector[d].reshape(R, N[d], order = 'F')).T
 
         # Reconstruct global component
