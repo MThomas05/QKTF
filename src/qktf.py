@@ -153,12 +153,11 @@ def global_operator(vec, maskT, KrU, KrU_T, Qu, psi, sigma, R, M):
     """
     X = vec.reshape(R, M, order = 'F')
     temp = KrU @ X
-    temp *= maskT
     Ap1 = sigma * (KrU_T @ temp)
     Ap2 = psi * (X @ Qu)
     return (Ap1 + Ap2).ravel(order = 'F')
 
-def global_admm(Qu, psi, sigma, KrU, mask_matrixT, YR_tilde, priorvalue, max_iter, tau, z, theta, sum_obs, total_data):
+def global_admm(Qu, psi, sigma, KrU, mask_matrixT, YR_tilde, priorvalue, max_iter, tau, z, theta, sum_obs, total_data, R):
     """
     Global ADMM algorithm for updating latent matrices in each dimension.
 
@@ -183,8 +182,7 @@ def global_admm(Qu, psi, sigma, KrU, mask_matrixT, YR_tilde, priorvalue, max_ite
         theta_flat: updated lagrangian multiplier
         info: CG convergence information
     """
-    R, M = YR_tilde.shape
-    YR_flat = YR_tilde.ravel(order = 'F')
+    M = YR_tilde.shape[1]
     x0 = priorvalue.copy()
     x0_flat = x0.ravel(order = 'F')
     z_flat = z.ravel(order = 'F')
@@ -199,28 +197,28 @@ def global_admm(Qu, psi, sigma, KrU, mask_matrixT, YR_tilde, priorvalue, max_ite
         b = b_mat.ravel(order='F')
 
         # latent matrix update
-        A_op = linalg.LinearOperator((R*M), (R*M), matvec=lambda v: global_operator(v, mask_matrixT, KrU, KrU_T, Qu, psi, sigma, R, M))
-        u_vec, info = linalg.cg(A_op, b, x0 = x0_flat, atol = 1e-4, maxiter = max_iter)
+        A_op = linalg.LinearOperator((R*M, R*M), matvec=lambda v: global_operator(v, mask_matrixT, KrU, KrU_T, Qu, psi, sigma, R, M))
+        u_vec, gcg_info = linalg.cg(A_op, b, x0 = x0_flat, atol = 1e-4, maxiter = max_iter)
     
         # auxiliary variable update
         alpha = sum_obs * sigma
-        eta = YR_flat - theta_flat - u_vec
+        eta = YR_tilde - theta_flat - u_vec
 
         z_vec = prox_map(eta, alpha, tau)
     
         # lagrangian multiplier update
-        theta_flat = theta_flat + u_vec + z_vec - YR_flat
+        theta_flat = theta_flat + u_vec + z_vec - YR_tilde
 
         # convergence criterion
-        res_pri = u_vec + z_vec - (mask_matrixT * YR_flat)
+        res_pri = u_vec + z_vec - (mask_matrixT * YR_tilde)
         res_dual = sigma * KrU_T @ (mask_matrixT * (z_vec - z_prev))
         eps_pri = np.sqrt(sum_obs) * 1e-4 + 1e-4 * np.maximum(np.maximum(np.linalg.norm(u_vec), np.linalg.norm(z)), np.linalg.norm(YR_tilde))
-        eps_dual = np.sqrt(total_data) * 1e-4 + 1e-4 * np.linalg.norm((mask_matrixT @ KrU_T) * theta)
+        eps_dual = np.sqrt(total_data) * 1e-4 + 1e-4 * np.linalg.norm(mask_matrixT @ (KrU_T * theta))
 
         if np.linalg.norm(res_pri) <= eps_pri and np.linalg.norm(res_dual) <= eps_dual:
             break    
 
-    return u_vec, z_vec, theta_flat, info
+    return u_vec, z_vec, theta_flat, gcg_info
     
 def local_operator(vec, pos_obs, Kr, lambda_, shape):
     """
@@ -281,7 +279,7 @@ def local_admm(lambda_, priorvalue, a, v, Kr, pos_obs, sum_obs, YR_tilde, max_it
 
         # r-update
         ar = linalg.LinearOperator((N, N), matvec=lambda v: local_operator(v, pos_obs, Kr, lambda_, shape))
-        r_vec, info = linalg.cg(ar, b, x0 = np.zeros(N), atol = 1e-4, maxiter = max_iter)
+        r_vec, lcg_info = linalg.cg(ar, b, x0 = np.zeros(N), atol = 1e-4, maxiter = max_iter)
 
         # auxiliary variable update
         r_obs = r_vec[pos_obs]
@@ -302,7 +300,7 @@ def local_admm(lambda_, priorvalue, a, v, Kr, pos_obs, sum_obs, YR_tilde, max_it
         if np.linalg.norm(res_pri) <= eps_pri and np.linalg.norm(res_dual) <= eps_dual:
             break
 
-    return r_obs, a_vec, v_vec, info
+    return r_obs, a_vec, v_vec, lcg_info
 
 def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, varianceR: list, tapering_range, d_maternU, d_maternR, R, psi, sigma, lambda_, tau, maxiter, K0, epsilon, verbose=True):
     """
@@ -433,7 +431,7 @@ def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, vari
             Gtensor_unfold = unfold(Gtensor_mask, d).T
 
             UTvector[d], z[d], theta[d], info = global_admm(
-                invKu[d], psi, sigma, KrU, mask_matrixT[d], Gtensor_unfold, UTvector[d], 100, tau, z[d], theta[d], num_obs, total_data)
+                invKu[d], psi, sigma, KrU, mask_matrixT[d], Gtensor_unfold, UTvector[d], 100, tau, z[d], theta[d], num_obs, total_data, R)
             U[d] = (UTvector[d].reshape(R, N[d], order = 'F')).T
 
         # Reconstruct global component
@@ -478,59 +476,53 @@ def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, vari
                 print(f"Convergence achieved at iteration {iter} with tolerance {tol:.4e}")
             break
         
-        # ========== Diagnostics ==========
-        # Restoring mean
-        I_recovery = X + np.mean(train_matrix)
-        M_component = M + np.mean(train_matrix)
-        R_component = rtensor + np.mean(train_matrix)
+    # ========== Diagnostics ==========
+    # Restoring mean
+    I_recovery = X + np.mean(train_matrix)
+    M_component = M + np.mean(train_matrix)
+    R_component = rtensor + np.mean(train_matrix)
 
-        obs_entries = I[Omega]
-        recovered_obs = I_recovery[Omega]
-        rmse_obs = np.sqrt(np.mean((obs_entries - recovered_obs) ** 2))
-        mse_obs = np.mean((obs_entries - recovered_obs) ** 2)
-        recovered_min = np.min(I_recovery)
-        recovered_max = np.max(I_recovery)
-
-        info = {
-            'iteration': iter + 1,
-            'tolerance': tol,
-            'converge': tol < epsilon,
-
-            'bias_obs': float(np.mean(obs_entries - recovered_obs).get()),
-            'variance': float(np.var(obs_entries - recovered_obs).get()),
-            'rmse': float(np.sqrt(np.mean((obs_entries - recovered_obs) ** 2)).get()),
-            'mse': float(np.mean((obs_entries - recovered_obs) ** 2).get()),
-            'mae': float(np.mean(np.abs(obs_entries - recovered_obs)).get()),
-            'global_contribution': float(np.linalg.norm(M_component) / np.linalg.norm(I_recovery).get()),
-            'local_contribution': float(np.linalg.norm(R_component) / np.linalg.norm(I_recovery).get()),
-            'residual_min': float(np.min(obs_entries - recovered_obs).get()),
-            'residual_max': float(np.max(obs_entries - recovered_obs).get()),
-            'residual_median': float(np.median(obs_entries - recovered_obs).get())
-        }
+    global_norm = np.linalg.norm(M_component).get()
+    local_norm = np.linalg.norm(R_component).get()
+    total_norm = np.linalg.norm(I_recovery).get()
+    obs_entries = I[Omega]
+    recovered_obs = I_recovery[Omega]
+    rmse_obs = np.sqrt(np.mean((obs_entries - recovered_obs) ** 2))
+    mse_obs = np.mean((obs_entries - recovered_obs) ** 2)
+    recovered_min = np.min(I_recovery)
+    recovered_max = np.max(I_recovery)
+    bias_obs = float(np.mean(obs_entries - recovered_obs).get())
+    variance = float(np.var(obs_entries - recovered_obs).get())
+    mae_obs = float(np.mean(np.abs(obs_entries - recovered_obs)).get())
+    global_contribution = float(global_norm / total_norm)
+    local_contribution = float(local_norm / total_norm)
+    residual_min = float(np.min(obs_entries - recovered_obs).get())
+    residual_max = float(np.max(obs_entries - recovered_obs).get())
+    residual_median = float(np.median(obs_entries - recovered_obs).get())
 
     if verbose:
         print(f"QKTF Completion Summary")
         print(f"Convergence: {'Achieved' if tol < epsilon else 'Not Achieved'}")
-        print(f"Iterations: {info['iteration']}")
-        print(f"Final Tolerance: {info['tolerance']:.4e}")
+        print(f"Iterations: {iter + 1}")
+        print(f"Final Tolerance: {tol:.4e}")
 
         print(f"\n Diagnostics:")
-        print(f"Bias (Observed): {info['bias_obs']:.4e}")
-        print(f"Variance (Observed): {info['variance']:.4e}")
-        print(f"RMSE (Observed): {info['rmse']:.4e}")
-        print(f"MSE (Observed): {info['mse']:.4e}")
-        print(f"MAE (Observed): {info['mae']:.4e}")
+        print(f"Bias (Observed): {bias_obs:.4e}")
+        print(f"Variance (Observed): {variance:.4e}")
+        print(f"RMSE (Observed): {rmse_obs:.4e}")
+        print(f"MSE (Observed): {mse_obs:.4e}")
+        print(f"MAE (Observed): {mae_obs:.4e}")
 
         print(f"\n Contribution Analysis:")
-        print(f"Global Component Contribution: {info['global_contribution']:.4%}")
-        print(f"Local Component Contribution: {info['local_contribution']:.4%}")
+        print(f"Global Component Contribution: {global_contribution:.4%}")
+        print(f"Local Component Contribution: {local_contribution:.4%}")
 
         print(f"\n Residual Analysis:")
-        print(f"Residual Min (Observed): {info['residual_min']:.4e}")
-        print(f"Residual Max (Observed): {info['residual_max']:.4e}")
-        print(f"Residual Median (Observed): {info['residual_median']:.4e}")
+        print(f"Residual Min (Observed): {residual_min:.4e}")
+        print(f"Residual Max (Observed): {residual_max:.4e}")
+        print(f"Residual Median (Observed): {residual_median:.4e}")
 
-    return I_recovery, M_component, R_component, info
+    return I_recovery, M_component, R_component
 
 
 
