@@ -18,7 +18,7 @@ def cov_matern(d, loghyper, x):
     return sf2*m(np.sqrt(d*dist_sq))
 
 def bohman(loghyper, x):
-    range_ = np.exp(loghyper[0])
+    range_ = np.exp(loghyper)
     dis = np.abs(x[:, None] - x[None, :])
     r = np.minimum(dis/range_, 1)
     k = (1-r)*np.cos(np.pi*r)+np.sin(np.pi*r)/np.pi
@@ -69,12 +69,13 @@ def build_khatri_rao(U, dims):
     Returns:
         khatri-rao product
     """
+    dims = [int(d) for d in dims]
     if len(dims) == 1:
         return U[dims[0]]
     else:
         result = U[dims[-1]]
-        for i in reversed(dims[:-1]):
-            result = khatri_rao(U[i], result)
+        for i in range(len(dims) - 2, -1, -1):
+            result = khatri_rao(U[dims[i]], result)
         return result
     
 def reconstruct_tensor(U, shape):
@@ -89,12 +90,16 @@ def reconstruct_tensor(U, shape):
     Returns:
         M: reconstructed tensor 
     """
-    dims = len(U)
-    N = numpy.array(shape)
-    dims_except_0 = np.arange(1, dims)
-    KrU = build_khatri_rao(U, dims_except_0)
-    M_unfold = U[0] @ KrU.T
-    M = fold(M_unfold, N, 0)
+    D = len(shape)
+    dims_except_0 = list(range(1, D))
+    if len(dims_except_0) > 0:
+        KrU = build_khatri_rao(U, dims_except_0)
+        M_unfold = U[0] @KrU.T
+    else:
+        M_unfold
+    
+    M = M_unfold.reshape(shape, order = 'F')
+
     return M
 
 def kronecker_covariances(Kr, vec, shape):
@@ -189,7 +194,7 @@ def global_admm(Qu, psi, sigma, KrU, mask_matrixT, YR_tilde, priorvalue, max_ite
     # ========== ADMM iterations ==========
     for j in range(max_iter):
         z_prev = z_flat.copy()
-        rhs_mat = mask_matrixT * (YR_tilde - z - theta)
+        rhs_mat = YR_tilde - z - theta
         b_mat = sigma * (KrU_T @ rhs_mat)
         b = b_mat.ravel(order='F')
 
@@ -380,7 +385,7 @@ def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, vari
 
         # Local covariance
         hyper_Kr[d] = [np.log(lengthscaleR[d]), np.log(varianceR[d]), np.log(tapering_range)]
-        TaperM = bohman([hyper_Kr[d]], x)
+        TaperM = bohman(hyper_Kr[d][0], x)
         Kr[d] = csr_matrix(cov_matern(d_maternR, hyper_Kr[d][:2], x) * TaperM)
 
     # ========== Initialisation for ADMM iterations ==========
@@ -388,17 +393,19 @@ def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, vari
     X[pos_miss] = T.sum() / num_obs
 
     # Variable initialisation
-    theta = [np.zeros(int(np.sum(mask_matrix[d]))) for d in range(D)]
-    z = [np.zeros(int(np.sum(mask_matrix[d]))) for d in range(D)] 
-    U = [np.zeros((R, N[d])) for d in range(D)] 
+    theta = [np.zeros(N[d]) for d in range(D)]
+    z = [np.zeros(N[d]) for d in range(D)] 
+    U = [np.zeros((N[d], R)) for d in range(D)] 
 
     rtensor = np.zeros(N) 
     y = np.zeros(N) 
-    v = np.zeros(total_data) 
-    a = np.zeros(total_data)
+    v = np.zeros(N) 
+    a = np.zeros(N)
 
     Uvector = [U[d].ravel(order = 'F') for d in range(D)]
     UTvector = [U[d].T.ravel(order = 'F') for d in range(D)]
+    theta_vector = [theta[d].T for d in range(D)]
+    z_vector = [z[d].T for d in range(D)]
     rvector = rtensor.ravel(order='F')
     rvector_temp = rtensor.ravel(order = 'F')
 
@@ -428,7 +435,7 @@ def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, vari
             HG = KrU.T @ unfold(Gtensor_mask, d).T
 
             UTvector[d], z[d], theta[d], info = global_admm(
-                invKu[d], psi, sigma, KrU, mask_matrixT[d], HG, UTvector[d], 100, tau, z[d], theta[d], num_obs, total_data)
+                invKu[d], psi, sigma, KrU, mask_matrixT[d], HG, UTvector[d], 100, tau, z_vector[d], theta_vector[d], num_obs, total_data)
             U[d] = (UTvector[d].reshape(R, N[d], order = 'F')).T
 
         # Reconstruct global component
