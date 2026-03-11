@@ -75,7 +75,7 @@ def build_khatri_rao(U, dims):
     else:
         result = U[dims[-1]]
         for i in range(len(dims) - 2, -1, -1):
-            result = khatri_rao(U[dims[i]], result)
+            result = khatri_rao(result, U[dims[i]])
         return result
     
 def reconstruct_tensor(U, shape):
@@ -404,8 +404,6 @@ def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, vari
 
     Uvector = [U[d].ravel(order = 'F') for d in range(D)]
     UTvector = [U[d].T.ravel(order = 'F') for d in range(D)]
-    theta_vector = [theta[d].T for d in range(D)]
-    z_vector = [z[d].T for d in range(D)]
     rvector = rtensor.ravel(order='F')
     rvector_temp = rtensor.ravel(order = 'F')
 
@@ -435,7 +433,7 @@ def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, vari
             HG = KrU.T @ unfold(Gtensor_mask, d).T
 
             UTvector[d], z[d], theta[d], info = global_admm(
-                invKu[d], psi, sigma, KrU, mask_matrixT[d], HG, UTvector[d], 100, tau, z_vector[d], theta_vector[d], num_obs, total_data)
+                invKu[d], psi, sigma, KrU, mask_matrixT[d], HG, UTvector[d], 100, tau, z[d], theta[d], num_obs, total_data)
             U[d] = (UTvector[d].reshape(R, N[d], order = 'F')).T
 
         # Reconstruct global component
