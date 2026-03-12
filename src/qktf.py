@@ -411,7 +411,7 @@ def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, vari
     M = reconstruct_tensor(U, N)
     X[pos_miss] = M[pos_miss] + rtensor[pos_miss]
 
-    d_all = np.arange(D) # array of all dimensions
+    d_all = np.arange(0, D) # array of all dimensions
     train_norm = np.linalg.norm(T)
     last_ten = T.copy()
     pbar = tqdm(total=maxiter, desc="QKTF Iterations")
@@ -464,6 +464,8 @@ def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, vari
         else:
             rtensor = np.zeros(N)
 
+        print(f"rtensor: {rtensor}")
+
         # Update X
         X[pos_miss] = M[pos_miss] + rtensor[pos_miss]
 
@@ -478,57 +480,7 @@ def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, vari
             pbar.close()
             break
 
-    # ========== Diagnostics ==========
-    # Restoring mean
-    I_recovery = X + np.mean(train_matrix)
-
-    M_norm = np.linalg.norm(M).get()
-    rtensor_norm = np.linalg.norm(rtensor).get()
-    total_norm = np.linalg.norm(I_recovery).get()
-
-    obs_true = I[Omega]
-    recovered_obs = I_recovery[Omega]
-
-    rmse_obs = np.sqrt(np.mean((obs_true - recovered_obs) ** 2)).astype(float)
-    mse_obs = np.mean((obs_true - recovered_obs) ** 2).astype(float)
-    mae_obs = np.mean(np.abs(obs_true - recovered_obs)).astype(float)
-
-    bias_obs = np.mean(obs_true - recovered_obs).astype(float)
-    variance = np.var(obs_true - recovered_obs).astype(float)
-
-    recovered_min = np.min(I_recovery).astype(float)
-    recovered_max = np.max(I_recovery).astype(float)
-    
-    residual_min = np.min(obs_true - recovered_obs).astype(float)
-    residual_max = np.max(obs_true - recovered_obs).astype(float)
-    residual_median = np.median(obs_true - recovered_obs).astype(float)
-
-    M_norm = np.linalg.norm(M).get()
-    R_norm = np.linalg.norm(rtensor).get()
-    total_norm = np.linalg.norm(I_recovery).get()
-    global_contr = M_norm / total_norm
-    local_contr = R_norm / total_norm
-
-    print(f"QKTF Completion Summary")
-    print(f"Convergence: {'Achieved' if tol < epsilon else 'Not Achieved'}")
-    print(f"Iterations: {iter + 1}")
-    print(f"Final Tolerance: {tol:.4e}")
-
-    print(f"\n Diagnostics:")
-    print(f"Bias (Observed): {bias_obs:.4e}")
-    print(f"Variance (Observed): {variance:.4e}")
-    print(f"RMSE (Observed): {rmse_obs:.4e}")
-    print(f"MSE (Observed): {mse_obs:.4e}")
-    print(f"MAE (Observed): {mae_obs:.4e}")
-
-    print(f"\n Residual Analysis:")
-    print(f"Residual Min (Observed): {residual_min:.4e}")
-    print(f"Residual Max (Observed): {residual_max:.4e}")
-    print(f"Residual Median (Observed): {residual_median:.4e}")
-
-    print(f"\n Contribution Analysis:")
-    print(f"Global contribution: {global_contr:.4e}")
-    print(f"Local contribution: {local_contr:.2e}")
+    I_recovery = x + np.mean(train_matrix)
 
     return I_recovery, M + np.mean(train_matrix), rtensor
 
