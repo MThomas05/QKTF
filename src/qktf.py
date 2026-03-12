@@ -184,44 +184,40 @@ def global_admm(Qu, psi, sigma, KrU, mask_matrixT, YR_tilde, priorvalue, max_ite
     """
     M = YR_tilde.shape[1]
     x0 = priorvalue.copy()
-    x0_flat = x0.ravel(order = 'F')
-    z_flat = z.ravel(order = 'F')
-    theta_flat = theta.ravel(order = 'F')
     KrU_T = KrU.T
 
     # ========== ADMM iterations ==========
     for j in range(max_iter):
-        z_prev = z_flat.copy()
-        rhs_mat = YR_tilde - z_flat - theta_flat
+        z_prev = z.copy()
+        rhs_mat = YR_tilde - z - theta
         b_mat = sigma * (KrU_T @ rhs_mat)
-        b = b_mat.ravel(order='F')
-
+        b = b_mat.ravel(order = 'F')
+    
         # latent matrix update
         A_op = linalg.LinearOperator((R*M, R*M), matvec=lambda v: global_operator(v, mask_matrixT, KrU, KrU_T, Qu, psi, sigma, R, M))
-        u_vec, gcg_info = linalg.cg(A_op, b, x0 = x0_flat, atol = 1e-4, maxiter = max_iter)
+        u_vec, gcg_info = linalg.cg(A_op, b, x0 = x0, atol = 1e-4, maxiter = max_iter)
     
         # auxiliary variable update
+        u_mat = u_vec.reshape(R, M, order = 'F')
+        H_u = KrU @ u_mat
         alpha = sum_obs * sigma
-        eta = YR_tilde - theta_flat - u_vec
+        eta = YR_tilde - theta - H_u
 
-        z_vec = prox_map(eta, alpha, tau)
+        z = prox_map(eta, alpha, tau)
     
         # lagrangian multiplier update
-        theta_flat = theta_flat + u_vec + z_vec - YR_tilde
+        theta = theta + H_u + z - YR_tilde
 
         # convergence criterion
-        res_pri = u_vec + z_vec - (mask_matrixT * YR_tilde)
-        res_dual = sigma * KrU_T @ (mask_matrixT * (z_vec - z_prev))
-        eps_pri = np.sqrt(sum_obs) * 1e-4 + 1e-4 * np.maximum(np.maximum(np.linalg.norm(u_vec), np.linalg.norm(z)), np.linalg.norm(YR_tilde))
-        eps_dual = np.sqrt(total_data) * 1e-4 + 1e-4 * np.linalg.norm(mask_matrixT @ (KrU_T * theta))
+        res_pri = H_u + z - (mask_matrixT * YR_tilde)
+        res_dual = sigma * KrU_T @ (mask_matrixT * (z - z_prev))
+        eps_pri = np.sqrt(sum_obs) * 1e-4 + 1e-4 * np.maximum(np.maximum(np.linalg.norm(H_u), np.linalg.norm(z)), np.linalg.norm(YR_tilde))
+        eps_dual = np.sqrt(total_data) * 1e-4 + 1e-4 * np.linalg.norm(KrU_T @ theta)
 
         if np.linalg.norm(res_pri) <= eps_pri and np.linalg.norm(res_dual) <= eps_dual:
-            break    
+            break  
 
-        z_reshaped = z_flat.reshape(M, R, order = 'F')
-        theta_reshaped = theta_flat.reshape(M, R, order = 'F')
-
-    return u_vec, z_reshaped, theta_reshaped, gcg_info
+    return u_vec, z, theta, gcg_info
     
 def local_operator(vec, pos_obs, Kr, lambda_, shape):
     """
@@ -237,12 +233,13 @@ def local_operator(vec, pos_obs, Kr, lambda_, shape):
     Returns:
         Ap[pos_obs] + lambda_ * vec: linear operator
     """
-    x = np.zeros(shape)
+    N = int(numpy.prod(shape))
+    x = np.zeros(N)
     x[pos_obs] = vec
     Ap = kronecker_covariances(Kr, x, shape)
     return Ap[pos_obs] + lambda_ * vec
 
-def local_admm(lambda_, priorvalue, a, v, Kr, pos_obs, sum_obs, YR_tilde, max_iter, tau, total_data):
+def local_admm(lambda_, priorvalue, a, v, Kr, pos_obs, sum_obs, YR_tilde, max_iter, tau, total_data, num_obs):
     """
     Local ADMM algorithm
 
@@ -267,22 +264,23 @@ def local_admm(lambda_, priorvalue, a, v, Kr, pos_obs, sum_obs, YR_tilde, max_it
         info = CG convergence information
     """
     shape = YR_tilde.shape
+    shape_arr = numpy.array(shape)
     Y_obs = (YR_tilde.ravel(order = 'F'))[pos_obs]
     r = priorvalue.copy()
-    a_vec = a.ravel(order = 'F')
-    v_vec = v.ravel(order = 'F')
-    N = int(np.prod(shape))
+    a_vec = a.ravel(order = 'F')[pos_obs]
+    v_vec = v.ravel(order = 'F')[pos_obs]
+    N = int(numpy.prod(shape_arr))
 
     # ========== ADMM iterations ==========
     for j in range(max_iter):
         a_prev = a_vec.copy()
         rhs_mat = Y_obs - a_vec - v_vec
-        b = np.zeros(N)
+        b = np.zeros(num_obs)
         b[pos_obs] = lambda_ * rhs_mat
 
         # r-update
-        ar = linalg.LinearOperator((N, N), matvec=lambda v: local_operator(v, pos_obs, Kr, lambda_, shape))
-        r_vec, lcg_info = linalg.cg(ar, b, x0 = np.zeros(N), atol = 1e-4, maxiter = max_iter)
+        ar = linalg.LinearOperator((num_obs, num_obs), matvec=lambda v: local_operator(v, pos_obs, Kr, lambda_, shape))
+        r_vec, lcg_info = linalg.cg(ar, b, x0 = np.zeros(num_obs), atol = 1e-4, maxiter = max_iter)
 
         # auxiliary variable update
         r_obs = r_vec[pos_obs]
@@ -303,12 +301,9 @@ def local_admm(lambda_, priorvalue, a, v, Kr, pos_obs, sum_obs, YR_tilde, max_it
         if np.linalg.norm(res_pri) <= eps_pri and np.linalg.norm(res_dual) <= eps_dual:
             break
 
-        a_reshaped = a_vec.reshape(shape, order = 'F')
-        v_reshaped = v_vec.reshape(shape, order = 'F')
-
     return r_obs, a_vec, v_vec, lcg_info
 
-def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, varianceR: list, tapering_range, d_maternU, d_maternR, R, psi, sigma, lambda_, tau, maxiter, K0, epsilon, verbose=True):
+def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, varianceR: list, tapering_range, d_maternU, d_maternR, R, psi, sigma, lambda_, tau, maxiter, K0, epsilon):
     """
     QKTF for an arbitrary tensor.
     
@@ -364,6 +359,7 @@ def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, vari
     mask_matrixT = [mask_matrix[d].T for d in range(D)]
     mask_flat = [mask_matrix[d].ravel(order = 'F') for d in range(D)]
     pos_obs = [np.where(mask_flat[d] == 1)[0] for d in range(D)]
+    pos_full = np.where(Omega.ravel(order = 'F') == 1)[0]
 
     # Data centering
     train_matrix = I * Omega
@@ -375,9 +371,6 @@ def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, vari
     hyper_Ku, hyper_Kr = [None] * D, [None] * D
     Ku, Kr = [None] * D, [None] * D
     invKu = [None] * D
-
-    if verbose:
-        print("Building covariance matrices...")
 
     for d in range(D):
         x = np.arange(1, N[d] + 1)
@@ -397,14 +390,17 @@ def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, vari
     X[pos_miss] = T.sum() / num_obs
 
     # Variable initialisation
-    z = [np.zeros((N[d], R)) for d in range(D)]
-    theta = [np.zeros((N[d], R)) for d in range(D)]
-    U = [np.zeros((N[d], R)) for d in range(D)] 
+    z, theta = [], []
+    for d in range(D):
+        prod = int(numpy.prod([N[i] for i in range(D) if i != d]))
+        z.append(np.zeros((prod, N[d])))
+        theta.append(np.zeros((prod, N[d])))
+    U = [np.random.randn(N[d], R) * 0.1 for d in range(D)] 
 
     rtensor = np.zeros(N) 
     y = np.zeros(N) 
-    v = np.zeros(N) 
-    a = np.zeros(N)
+    v = np.zeros(num_obs) 
+    a = np.zeros(num_obs)
 
     Uvector = [U[d].ravel(order = 'F') for d in range(D)]
     UTvector = [U[d].T.ravel(order = 'F') for d in range(D)]
@@ -416,15 +412,14 @@ def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, vari
     X[pos_miss] = M[pos_miss] + rtensor[pos_miss]
 
     d_all = np.arange(D) # array of all dimensions
-    last_ten = X.copy()
+    train_norm = np.linalg.norm(T)
+    last_ten = T.copy()
+    pbar = tqdm(total=maxiter, desc="QKTF Iterations")
+    iter = 0
 
     # ========== Main algorithm iterations ==========
-    if verbose:
-        pbar = tqdm(range(maxiter), desc="QKTF iterations")
-    else:
-        pbar = range(maxiter)
 
-    for iter in pbar:
+    while iter < maxiter:
 
         # Update global component
         Gtensor = X - rtensor 
@@ -436,12 +431,13 @@ def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, vari
             KrU = build_khatri_rao(U, dsub)
             Gtensor_unfold = unfold(Gtensor_mask, d).T
 
-            UTvector[d], z[d], theta[d], info = global_admm(
-                invKu[d], psi, sigma, KrU, mask_matrixT[d], Gtensor_unfold, UTvector[d], 100, tau, z[d], theta[d], num_obs, total_data, R)
+            UTvector[d], z[d], theta[d], gcg_info = global_admm(
+                invKu[d], psi, sigma, KrU, mask_matrixT[d], Gtensor_unfold, UTvector[d], 1000, tau, z[d], theta[d], num_obs, total_data, R)
             U[d] = (UTvector[d].reshape(R, N[d], order = 'F')).T
-
+        
         # Reconstruct global component
         M = reconstruct_tensor(U, N)    
+    
         X[pos_miss] = M[pos_miss] + rtensor[pos_miss]
 
         # Update local component
@@ -449,10 +445,13 @@ def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, vari
             Ltensor = X - M
             Ltensor_mask = Ltensor * Omega
 
-            rvector_temp[pos_obs[0]], a[pos_obs[0]], v[pos_obs[0]], info = local_admm(
-                lambda_, rvector_temp[pos_obs[0]], a[pos_obs[0]], v[pos_obs[0]], Kr, pos_obs[0], num_obs, Ltensor_mask, 100, tau, total_data)
+            rvector_temp, a, v, lcg_info = local_admm(
+                lambda_, rvector_temp[pos_full], a, v, Kr, pos_full, num_obs, Ltensor_mask, 1000, tau, total_data, num_obs)
             
-            rvector = kronecker_covariances(Kr, rvector_temp, N)
+            rvector_full = np.zeros(total_data)
+            rvector_full[pos_full] = rvector_temp
+            rvector_kc = kronecker_covariances(Kr, rvector_full, N)
+            rvector = rvector_kc
             rtensor = rvector.reshape(N, order = 'F')
 
             # Updating local covariances
@@ -463,73 +462,75 @@ def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, vari
                 Kr[D-1] = np.cov(rtensor_obs)      
             
         else:
-            rtensor = np.zeros_like(rtensor)
+            rtensor = np.zeros(N)
 
         # Update X
         X[pos_miss] = M[pos_miss] + rtensor[pos_miss]
 
-       # Convergence checks
-        train_norm = np.linalg.norm(T)
+        # Convergence checks
+        iter += 1
         tol = np.linalg.norm((X - last_ten)) / train_norm
         last_ten = X.copy()
+        pbar.set_postfix({'tol': f'{tol:.2e}', 'M_norm': f'{np.linalg.norm(M):.2e}', 'R_norm': f'{np.linalg.norm(rtensor):.2e}'})
+        pbar.update(1)
 
-        if verbose and hasattr(pbar, 'set_postfix'):
-            pbar.set_postfix({'tol': f"{tol:.4e}"})
-
-        if 0 < iter < maxiter and tol < epsilon:
-            if verbose:
-                if hasattr(pbar, 'set_postfix'):
-                    pbar.close()
-                print(f"Convergence achieved at iteration {iter} with tolerance {tol:.4e}")
+        if (iter >= maxiter) or (tol < epsilon):
+            pbar.close()
             break
-        
+
     # ========== Diagnostics ==========
     # Restoring mean
     I_recovery = X + np.mean(train_matrix)
-    M_component = M + np.mean(train_matrix)
-    R_component = rtensor + np.mean(train_matrix)
 
-    global_norm = np.linalg.norm(M_component).get()
-    local_norm = np.linalg.norm(R_component).get()
+    M_norm = np.linalg.norm(M).get()
+    rtensor_norm = np.linalg.norm(rtensor).get()
     total_norm = np.linalg.norm(I_recovery).get()
-    obs_entries = I[Omega]
+
+    obs_true = I[Omega]
     recovered_obs = I_recovery[Omega]
-    rmse_obs = np.sqrt(np.mean((obs_entries - recovered_obs) ** 2))
-    mse_obs = np.mean((obs_entries - recovered_obs) ** 2)
-    recovered_min = np.min(I_recovery)
-    recovered_max = np.max(I_recovery)
-    bias_obs = float(np.mean(obs_entries - recovered_obs).get())
-    variance = float(np.var(obs_entries - recovered_obs).get())
-    mae_obs = float(np.mean(np.abs(obs_entries - recovered_obs)).get())
-    global_contribution = float(global_norm / total_norm)
-    local_contribution = float(local_norm / total_norm)
-    residual_min = float(np.min(obs_entries - recovered_obs).get())
-    residual_max = float(np.max(obs_entries - recovered_obs).get())
-    residual_median = float(np.median(obs_entries - recovered_obs).get())
 
-    if verbose:
-        print(f"QKTF Completion Summary")
-        print(f"Convergence: {'Achieved' if tol < epsilon else 'Not Achieved'}")
-        print(f"Iterations: {iter + 1}")
-        print(f"Final Tolerance: {tol:.4e}")
+    rmse_obs = np.sqrt(np.mean((obs_true - recovered_obs) ** 2)).astype(float)
+    mse_obs = np.mean((obs_true - recovered_obs) ** 2).astype(float)
+    mae_obs = np.mean(np.abs(obs_true - recovered_obs)).astype(float)
 
-        print(f"\n Diagnostics:")
-        print(f"Bias (Observed): {bias_obs:.4e}")
-        print(f"Variance (Observed): {variance:.4e}")
-        print(f"RMSE (Observed): {rmse_obs:.4e}")
-        print(f"MSE (Observed): {mse_obs:.4e}")
-        print(f"MAE (Observed): {mae_obs:.4e}")
+    bias_obs = np.mean(obs_true - recovered_obs).astype(float)
+    variance = np.var(obs_true - recovered_obs).astype(float)
 
-        print(f"\n Contribution Analysis:")
-        print(f"Global Component Contribution: {global_contribution:.4%}")
-        print(f"Local Component Contribution: {local_contribution:.4%}")
+    recovered_min = np.min(I_recovery).astype(float)
+    recovered_max = np.max(I_recovery).astype(float)
+    
+    residual_min = np.min(obs_true - recovered_obs).astype(float)
+    residual_max = np.max(obs_true - recovered_obs).astype(float)
+    residual_median = np.median(obs_true - recovered_obs).astype(float)
 
-        print(f"\n Residual Analysis:")
-        print(f"Residual Min (Observed): {residual_min:.4e}")
-        print(f"Residual Max (Observed): {residual_max:.4e}")
-        print(f"Residual Median (Observed): {residual_median:.4e}")
+    M_norm = np.linalg.norm(M).get()
+    R_norm = np.linalg.norm(rtensor).get()
+    total_norm = np.linalg.norm(I_recovery).get()
+    global_contr = M_norm / total_norm
+    local_contr = R_norm / total_norm
 
-    return I_recovery, M_component, R_component
+    print(f"QKTF Completion Summary")
+    print(f"Convergence: {'Achieved' if tol < epsilon else 'Not Achieved'}")
+    print(f"Iterations: {iter + 1}")
+    print(f"Final Tolerance: {tol:.4e}")
+
+    print(f"\n Diagnostics:")
+    print(f"Bias (Observed): {bias_obs:.4e}")
+    print(f"Variance (Observed): {variance:.4e}")
+    print(f"RMSE (Observed): {rmse_obs:.4e}")
+    print(f"MSE (Observed): {mse_obs:.4e}")
+    print(f"MAE (Observed): {mae_obs:.4e}")
+
+    print(f"\n Residual Analysis:")
+    print(f"Residual Min (Observed): {residual_min:.4e}")
+    print(f"Residual Max (Observed): {residual_max:.4e}")
+    print(f"Residual Median (Observed): {residual_median:.4e}")
+
+    print(f"\n Contribution Analysis:")
+    print(f"Global contribution: {global_contr:.4e}")
+    print(f"Local contribution: {local_contr:.2e}")
+
+    return I_recovery, M + np.mean(train_matrix), rtensor
 
 
 
