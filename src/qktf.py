@@ -153,6 +153,7 @@ def global_operator(vec, maskT, KrU, KrU_T, Qu, psi, sigma, R, M):
     """
     X = vec.reshape(R, M, order = 'F')
     temp = KrU @ X
+    temp *= maskT
     Ap1 = sigma * (KrU_T @ temp)
     Ap2 = psi * (X @ Qu)
     return (Ap1 + Ap2).ravel(order = 'F')
@@ -185,21 +186,26 @@ def global_admm(Qu, psi, sigma, KrU, mask_matrixT, YR_tilde, priorvalue, max_ite
     M = YR_tilde.shape[1]
     x0 = priorvalue.copy()
     KrU_T = KrU.T
+    n = R * M
 
     # ========== ADMM iterations ==========
     for j in range(max_iter):
         z_prev = z.copy()
-        rhs_mat = YR_tilde - z - theta
-        b_mat = sigma * (KrU_T @ rhs_mat)
+        rhs_mat = sigma * (YR_tilde - z) - theta
+        rhs_mat *= mask_matrixT
+        b_mat = KrU_T @ rhs_mat
         b = b_mat.ravel(order = 'F')
     
         # latent matrix update
-        A_op = linalg.LinearOperator((R*M, R*M), matvec=lambda v: global_operator(v, mask_matrixT, KrU, KrU_T, Qu, psi, sigma, R, M))
+        def matvec(v):
+            return global_operator(v, mask_matrixT, KrU, KrU_T, Qu, psi, sigma, R, M)
+        A_op = linalg.LinearOperator((n, n), matvec=matvec, dtype=b.dtype)
         u_vec, gcg_info = linalg.cg(A_op, b, x0 = x0, atol = 1e-4, maxiter = max_iter)
     
         # auxiliary variable update
         u_mat = u_vec.reshape(R, M, order = 'F')
         H_u = KrU @ u_mat
+        H_u += mask_matrixT
         alpha = sum_obs * sigma
         eta = YR_tilde - theta - H_u
 
@@ -219,7 +225,7 @@ def global_admm(Qu, psi, sigma, KrU, mask_matrixT, YR_tilde, priorvalue, max_ite
 
     return u_vec, z, theta, gcg_info
     
-def local_operator(vec, pos_obs, Kr, lambda_, shape):
+def local_operator(vec, pos_obs, Kr, lambda_, gamma, shape):
     """
     Constructs linear operator for local ADMM algorithm.
 
@@ -236,10 +242,10 @@ def local_operator(vec, pos_obs, Kr, lambda_, shape):
     N = int(numpy.prod(shape))
     x = np.zeros(N)
     x[pos_obs] = vec
-    Ap = kronecker_covariances(Kr, x, shape)
+    Ap = gamma * kronecker_covariances(Kr, x, shape)
     return Ap[pos_obs] + lambda_ * vec
 
-def local_admm(lambda_, priorvalue, a, v, Kr, pos_obs, sum_obs, YR_tilde, max_iter, tau, total_data, num_obs):
+def local_admm(lambda_, gamma, priorvalue, a, v, Kr, pos_obs, sum_obs, YR_tilde, max_iter, tau, total_data, num_obs):
     """
     Local ADMM algorithm
 
@@ -276,14 +282,14 @@ def local_admm(lambda_, priorvalue, a, v, Kr, pos_obs, sum_obs, YR_tilde, max_it
         a_prev = a_vec.copy()
         rhs_mat = Y_obs - a_vec - v_vec
         b = np.zeros(num_obs)
-        b[pos_obs] = lambda_ * rhs_mat
+        b = lambda_ * rhs_mat
 
         # r-update
-        ar = linalg.LinearOperator((num_obs, num_obs), matvec=lambda v: local_operator(v, pos_obs, Kr, lambda_, shape))
+        ar = linalg.LinearOperator((num_obs, num_obs), matvec=lambda v: local_operator(v, pos_obs, Kr, lambda_, gamma, shape))
         r_vec, lcg_info = linalg.cg(ar, b, x0 = np.zeros(num_obs), atol = 1e-4, maxiter = max_iter)
 
         # auxiliary variable update
-        r_obs = r_vec[pos_obs]
+        r_obs = r_vec
         zeta = Y_obs - v_vec - r_obs
         alpha = sum_obs * lambda_
 
@@ -303,7 +309,7 @@ def local_admm(lambda_, priorvalue, a, v, Kr, pos_obs, sum_obs, YR_tilde, max_it
 
     return r_obs, a_vec, v_vec, lcg_info
 
-def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, varianceR: list, tapering_range, d_maternU, d_maternR, R, psi, sigma, lambda_, tau, maxiter, K0, epsilon):
+def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, varianceR: list, tapering_range, d_maternU, d_maternR, R, psi, sigma, lambda_, gamma, tau, maxiter, K0, epsilon):
     """
     QKTF for an arbitrary tensor.
     
@@ -390,11 +396,8 @@ def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, vari
     X[pos_miss] = T.sum() / num_obs
 
     # Variable initialisation
-    z, theta = [], []
-    for d in range(D):
-        prod = int(numpy.prod([N[i] for i in range(D) if i != d]))
-        z.append(np.zeros((prod, N[d])))
-        theta.append(np.zeros((prod, N[d])))
+    z = [np.random.randn(N[d], R) * 0.1 for d in range(D)]
+    theta = [np.random.randn(N[d], R) * 0.1 for d in range(D)]
     U = [np.random.randn(N[d], R) * 0.1 for d in range(D)] 
 
     rtensor = np.zeros(N) 
@@ -446,7 +449,7 @@ def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, vari
             Ltensor_mask = Ltensor * Omega
 
             rvector_temp, a, v, lcg_info = local_admm(
-                lambda_, rvector_temp[pos_full], a, v, Kr, pos_full, num_obs, Ltensor_mask, 1000, tau, total_data, num_obs)
+                lambda_, gamma, rvector_temp[pos_full], a, v, Kr, pos_full, num_obs, Ltensor_mask, 1000, tau, total_data, num_obs)
             
             rvector_full = np.zeros(total_data)
             rvector_full[pos_full] = rvector_temp
@@ -464,8 +467,6 @@ def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, vari
         else:
             rtensor = np.zeros(N)
 
-        print(f"rtensor: {rtensor}")
-
         # Update X
         X[pos_miss] = M[pos_miss] + rtensor[pos_miss]
 
@@ -480,7 +481,7 @@ def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, vari
             pbar.close()
             break
 
-    I_recovery = x + np.mean(train_matrix)
+        I_recovery = X + np.mean(train_matrix)
 
     return I_recovery, M + np.mean(train_matrix), rtensor
 
