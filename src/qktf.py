@@ -94,7 +94,7 @@ def reconstruct_tensor(U, shape):
     dims_except_0 = list(range(1, D))
     if len(dims_except_0) > 0:
         KrU = build_khatri_rao(U, dims_except_0)
-        M_unfold = U[0] @KrU.T
+        M_unfold = U[0] @ KrU.T
     else:
         M_unfold
     
@@ -213,10 +213,10 @@ def global_admm(Qu, psi, sigma, KrU, mask_matrixT, YR_tilde, priorvalue, max_ite
         z = prox_map(eta, alpha, tau)
     
         # lagrangian multiplier update
-        theta = theta + H_u + z - YR_tilde
+        theta = theta + sigma * (H_u + z - YR_tilde)
 
         # convergence criterion
-        res_pri = H_u + z - (mask_matrixT * YR_tilde)
+        res_pri = H_u + z - YR_tilde
         res_dual = sigma * KrU_T @ (mask_matrixT * (z - z_prev))
         eps_pri = np.sqrt(sum_obs) * 1e-4 + 1e-4 * np.maximum(np.maximum(np.linalg.norm(H_u), np.linalg.norm(z)), np.linalg.norm(YR_tilde))
         eps_dual = np.sqrt(total_data) * 1e-4 + 1e-4 * np.linalg.norm(KrU_T @ theta)
@@ -245,7 +245,7 @@ def local_operator(vec, pos_obs, Kr, gamma, lambda_, N):
     Ap = lambda_ * kroneckerMVM(Kr, x, N)
     return Ap[pos_obs] + gamma * vec
 
-def local_admm(lambda_, gamma, priorvalue, a, v, Kr, mask_matrixT, pos_obs, sum_obs, YR_tilde, max_iter, tau, total_data, num_obs, N):
+def local_admm(lambda_, gamma, priorvalue, a, v, Kr, mask_matrixT, pos_obs, YR_tilde, max_iter, tau, total_data, num_obs, N):
     """
     Local ADMM algorithm
 
@@ -286,22 +286,21 @@ def local_admm(lambda_, gamma, priorvalue, a, v, Kr, mask_matrixT, pos_obs, sum_
             return local_operator(v, pos_obs, Kr, lambda_, gamma, N)
         
         ar = linalg.LinearOperator((num_obs, num_obs), matvec=matvec, dtype=b.dtype)
-        w_vec, lcg_info = linalg.cg(ar, b, x0 = x0, atol = 1e-4, maxiter = max_iter)
-        r_vec = Kr * mask_matrixT[0] @ w_vec
+        r_vec, lcg_info = linalg.cg(ar, b, x0 = x0, atol = 1e-4, maxiter = max_iter)
 
         # auxiliary variable update
         zeta = Y_obs - v_vec - r_vec
-        alpha = sum_obs * lambda_
+        alpha = num_obs * lambda_
 
         a_vec = prox_map(zeta, alpha, tau)
 
         # lagrangian multiplier update
-        v_vec = v_vec + r_vec + a_vec - Y_obs
+        v_vec = v_vec + lambda_ * (r_vec + a_vec - Y_obs)
 
         # convergence criterion
         res_pri = r_vec + a_vec - Y_obs
         res_dual = lambda_ * (a_vec - a_prev)
-        eps_pri = np.sqrt(sum_obs) * 1e-4 + 1e-4 * np.maximum(np.maximum(np.linalg.norm(r_vec), np.linalg.norm(a_vec)), np.linalg.norm(Y_obs))
+        eps_pri = np.sqrt(num_obs) * 1e-4 + 1e-4 * np.maximum(np.maximum(np.linalg.norm(r_vec), np.linalg.norm(a_vec)), np.linalg.norm(Y_obs))
         eps_dual = np.sqrt(total_data) * 1e-4 + 1e-4 * np.linalg.norm(v_vec)
 
         if np.linalg.norm(res_pri) <= eps_pri and np.linalg.norm(res_dual) <= eps_dual:
@@ -365,7 +364,9 @@ def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, vari
     mask_matrixT = [mask_matrix[d].T for d in range(D)]
     mask_flat = [mask_matrix[d].ravel(order = 'F') for d in range(D)]
     pos_obs = [np.where(mask_flat[d] == 1)[0] for d in range(D)]
-    pos_full = np.where(Omega.ravel(order = 'F') == 1)[0]
+    Omega_flat = Omega.ravel(order = 'F')
+    pos_obs_global = np.where(Omega_flat == 1)[0]
+    num_obs_global = len(pos_obs_global)
 
     # Data centering
     train_matrix = I * Omega
@@ -406,8 +407,8 @@ def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, vari
 
     rtensor = np.zeros(N) 
     y = np.zeros(N) 
-    v = np.zeros(num_obs) 
-    a = np.zeros(num_obs)
+    v = np.zeros(num_obs_global) 
+    a = np.zeros(num_obs_global)
 
     Uvector = [U[d].ravel(order = 'F') for d in range(D)]
     UTvector = [U[d].T.ravel(order = 'F') for d in range(D)]
@@ -429,17 +430,15 @@ def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, vari
     while iter < maxiter:
 
         # Update global component
-        Gtensor = X - rtensor 
-        Gtensor_mask = Gtensor * Omega
-
         for d in range(D):
             dsub = np.delete(d_all, d)
             dsub = np.array(dsub)
             KrU = build_khatri_rao(U, dsub)
-            Gtensor_unfold = unfold(Gtensor_mask, d).T
+
+            X_unfold = unfold(X, d)
 
             UTvector[d], z[d], theta[d], gcg_info = global_admm(
-                invKu[d], psi, sigma, KrU, mask_matrixT[d], Gtensor_unfold, UTvector[d], 1000, tau, z[d], theta[d], num_obs, total_data, R)
+                invKu[d], psi, sigma, KrU, mask_matrixT[d], X_unfold, UTvector[d], 1000, tau, z[d], theta[d], num_obs, total_data, R)
             U[d] = (UTvector[d].reshape(R, N[d], order = 'F')).T
         
         # Reconstruct global component
@@ -449,26 +448,29 @@ def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, vari
 
         # Update local component
         if iter >= K0:
+            print(f"Iter {iter}: rtensor norm = {np.linalg.norm(rtensor):.4f}")
+            print(f"Iter {iter}: rvecotr_temp unobserved = {rvector_temp[pos_miss[0]][:5]}")
             Ltensor = X - M
             Ltensor_mask = Ltensor * Omega
 
-            rvector_temp, a, v, lcg_info = local_admm(
-                lambda_, gamma, rvector_temp[pos_full], a, v, Kr, mask_matrixT, pos_full, num_obs, Ltensor_mask, 1000, tau, total_data, num_obs, N)
-            rvector_full = np.zeros(total_data)
-            rvector_full[pos_full] = rvector_temp
-            rvector_kc = kroneckerMVM(Kr, rvector_full, N)
-            rvector = rvector_kc
+            r_obs, a, v, lcg_info = local_admm(
+                lambda_, gamma, rvector_temp[pos_obs_global], a, v, Kr, mask_matrixT, pos_obs_global, Ltensor_mask, 1000, tau, total_data, num_obs_global, N)
+            rvector_temp = np.zeros(total_data)
+            rvector_temp[pos_obs_global] = r_obs
+            rvector = kroneckerMVM(Kr, rvector_temp, N)
             rtensor = rvector.reshape(N, order = 'F')
-
-            # Updating local covariances
-            if D >= 2:
-                rtensor_unfold_last = unfold(rtensor, D-1)
-                idx_last = np.sum(mask_matrix[D-1], axis = 0) > 0
-                rtensor_obs = rtensor_unfold_last[:, idx_last]
-                Kr[D-1] = np.cov(rtensor_obs)      
+            for d in range(D):
+                rtensor_unfold = unfold(rtensor, d)
+                idx = np.sum(mask_matrix[d], axis=0) > 0
+                if np.sum(idx) > 1: # Need at least 2 columns for covariance
+                    rtensor_fold_d = rtensor_unfold[:, idx]
+                    cov_dense = np.cov(rtensor_fold_d) # Updating local covariance  
+                    x = np.arange(1, N[d] + 1)
+                    TaperM = bohman(hyper_Kr[d][0], x)
+                    Kr[d] = csr_matrix(cov_dense * TaperM) 
             
         else:
-            rtensor = np.zeros(N)
+            rtensor = np.zeros_like(rtensor)
 
         # Update X
         X[pos_miss] = M[pos_miss] + rtensor[pos_miss]
