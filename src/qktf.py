@@ -114,7 +114,7 @@ def prox_map(xi, alpha, tau):
     """
     low = (tau - 1)/alpha # calculates the lower bound for the proximal operator.
     high = tau/alpha # calculates the upper bound for the proximal operator.
-    return xi - np.minimum((tau - 1)/alpha, np.minimum(xi, tau/alpha)) # applies the proximal operator to the input vector.
+    return xi - np.maximum((tau - 1)/alpha, np.minimum(xi, tau/alpha)) # applies the proximal operator to the input vector.
 
 def global_operator(vec, maskT, KrU, KrU_T, Qu, psi, sigma, R, M):
     """
@@ -196,10 +196,17 @@ def global_admm(Qu, KrU, mask_matrixT, mask_matrix, YR_tilde, priorvalue, z, the
 
         # z-update using Proximal operator.
 
-        
+        eta = YR_tilde - theta - temp # computes the input for the proximal operator.
+        alpha = sum_obs * sigma # computes the alpha parameter for the proximal operator.
+        z = prox_map(eta, alpha, tau) # applies the proximal operator to update the auxiliary variable.
+        print(f"z shape: {z.shape}")
 
-                           
+        # theta-update.
 
+        theta = theta + sigma * (temp + z - YR_tilde) # updates the Lagrange multiplier variable.
+        print(f"theta shape: {theta.shape}")
+
+        return u, z, theta, info
 
 def qktf(I, Omega, lengthscaleU: list, varianceU: list, tapering_range, d_maternU, R, psi, sigma, tau, max_iter, epsilon):
     """
