@@ -1,29 +1,38 @@
 import cupy as np
 import numpy
-from cupyx.scipy.sparse import linalg, eye, csr_matrix
-from cupyx.scipy.linalg import khatri_rao
 from tqdm import tqdm
+from cupyx.scipy.linalg import khatri_rao
+from cupyx.scipy.sparse import linalg
 
 def cov_matern(d, loghyper, x):
+    """
+    Computes the Matern covariance matrix for a given dimension.
+
+    Args:
+
+
+    Returns:
+    
+    """
     ell = np.exp(loghyper[0])
     sf2 = np.exp(2*loghyper[1])
     def f(t):
         if d == 1: return 1
-        if d == 3: return 1+t
-        if d == 5: return 1+t*(1+t/3)
-        if d == 7: return 1+t*(1+t*(6+t)/15)
+        if d == 3: return 1 + t
+        if d == 5: return 1 + t*(1 + t/3)
+        if d == 7: return 1 + t*(1 + t*(6 + t)/15)
     def m(t):
         return f(t)*np.exp(-t)
     dist_sq = ((x[:, None] - x[None, :])/ell)**2
     return sf2*m(np.sqrt(d*dist_sq))
 
 def bohman(loghyper, x):
-    range_ = np.exp(loghyper)
+    range_ = np.exp(loghyper[0])
     dis = np.abs(x[:, None] - x[None, :])
     r = np.minimum(dis/range_, 1)
-    k = (1-r)*np.cos(np.pi*r)+np.sin(np.pi*r)/np.pi
+    k = (1 - r)*np.cos(np.pi*r) + np.sin(np.pi*r)/np.pi
     k[k < 1e-16] = 0
-    k[np.isnan(k)] = 0 
+    k[np.isnan(k)] = 0
     return k
 
 def unfold(tensor, mode):
@@ -31,470 +40,257 @@ def unfold(tensor, mode):
     Performs mode-d unfolding of a tensor.
 
     Args:
-        tensor: input tensor
-        mode: axis to do unfolding
+        tensor (ndarray): input tensor to be unfolded.
+        mode (int): the mode along which to unfold the tensor.
 
     Returns:
-        np.reshape(np.moveaxis(tensor, mode, 0), (tensor.shape[mode], -1), order = 'F'): unfolded tensor
+        ndarray: unfolded tensor.
     """
     return np.reshape(np.moveaxis(tensor, mode, 0), (tensor.shape[mode], -1), order = 'F')
 
 def fold(mat, dim, mode):
     """
-    Performs folding of an unfolded tensor.
+    Performs mode-d folding of a matrix.
 
     Args:
-        mat: unfolded tensor
-        dim: tuple/1d array containing dimensions of original tensor
-        mode: axis where tensor was unfolded
+        mat (ndarray): input matrix to be folded.
+        dim (ndarray): 1d-array containing the dimensions of original tensor.
+        mode (int): the mode along which to fold the matrix.
 
     Returns:
-        np.moveaxis(np.reshape(mat, list(dim[index]), order = 'F'), 0, mode): folded tensor
+        ndarray: folded tensor.
     """
-    index = list()
-    index.append(mode) 
-    for i in range(dim.shape[0]): 
-        if i != mode:
-            index.append(i)
+    index = list() # creates an empty list to store the new order of dimensions
+    index.append(mode) # adds the mode to the index list
+    for i in range(dim.shape[0]): # iterates through the axis of the dimension array
+        if i != mode: # checks to ensure the current dimensions doesn't equal the mode
+            index.append(i) # adds the current dimension to the index list
     return np.moveaxis(np.reshape(mat, list(dim[index]), order = 'F'), 0, mode)
 
-def build_khatri_rao(U, dims):
-    """
-    Builds khatri-rao product for arbitrary dimension.
-    
-    Args:
-        U: list of latent matrices in each dimension
-        d: number of dimensions
-    
-    Returns:
-        khatri-rao product
-    """
-    dims = [int(d) for d in dims]
-    if len(dims) == 1:
-        return U[dims[0]]
-    else:
-        result = U[dims[-1]]
-        for i in range(len(dims) - 2, -1, -1):
-            result = khatri_rao(result, U[dims[i]])
-        return result
-    
 def reconstruct_tensor(U, shape):
     """
-    Reconstructs tensor from CP for arbitrary dimension (used in global).
+    Reconstructs the global component of the tensor from CP decomposition of the latent matrices.
 
     Args:
-        U: list of latent matrices
-        dims: number of dimensions
-        R: rank of CP decomposition
+        U (list): list of D latent matrices, where D is the number of dimensions of the input tensor.
+        shape (tuple): shape of the original tensor.
 
     Returns:
-        M: reconstructed tensor 
+        ndarray: reconstructed global component of the tensor.
     """
-    D = len(shape)
-    dims_except_0 = list(range(1, D))
-    if len(dims_except_0) > 0:
-        KrU = build_khatri_rao(U, dims_except_0)
-        M_unfold = U[0] @ KrU.T
+
+def build_khatri_rao(U, d):
+    """
+    Builds the Khatri-Rao product of a list of matrices, all dimensions except the current one.
+
+    Args:
+        U (list): list of D latent matrices, where D is the number of dimensions of the input tensor.
+        d (int): current dimension being updated in the ADMM iterations of the QKTF algorithm.
+
+    Returns:
+        ndarray: Khatri-Rao product of the list of matrices.
+    """
+    D = len(U) # sets D as the number of dimensions of the input tensor, which is equal to the length of the list of latent matrices.
+    matrices = [U[i] for i in range(D-1, -1, -1) if i != d] # creates a list of matrices, excluding the current dimension, in reverse order
+    if len(matrices) == 1: # if there's only one dimension, the Khatri-Rao product is just the matrix itself.
+        return matrices[0]
     else:
-        M_unfold
+        result = matrices[-1] # ensures the Khatri-Rao product is computed in the correct order - starting with the last matrix in the list.
+        for i in range(1, len(matrices)): # iterates through the list of matrices in reverse order, excluding the current dimension.
+            result = khatri_rao(result, matrices[i]) # computes the Khatri-Rao product of the current result and the next matrix in the list.
+        return result
     
-    M = M_unfold.reshape(shape, order = 'F')
-
-    return M
-
-def kroneckerMVM(Kr, vec, shape):
+def prox_map(xi, alpha, tau):
     """
-    Creates kronecker product of covariances for local component.
+    Proximal operator for the z-update step of the ADMM algorithm in the QKTF algorithm.
 
     Args:
-        Kr: list of covariance matrices
-        vec: input vector
-        shape: shape of original tensor
+        xi (ndarray): input vector for the proximal operator.
+        alpha (float): parameter for the proximal operator - |Omega|*sigma.
+        tau (float): quantile parameter for the ADMM algorithm.
 
     Returns:
-        result: kronecker product of covariances
+        ndarray: output vector after applying the proximal operator.
     """
-    D = len(shape)
-    x = vec.reshape(shape, order = 'F')
-
-    for d in range(D):
-        x_unfold = unfold(x, d)
-        x_unfold = Kr[d] @ x_unfold
-        x = fold(x_unfold, numpy.array(shape), d)
-    
-    return x.ravel(order = 'F')
-
-def prox_map(xi, alpha, tau):
-        """
-        Proximal mapping for quantile regression.
-
-        Args:
-            xi: input vector
-            alpha: sum_obs * ADMM penalty
-            tau: quantile parameter
-        """
-        low = (tau - 1) / alpha
-        high = tau / alpha
-        return xi - np.maximum((tau - 1) / alpha, np.minimum(xi, tau / alpha))    
+    low = (tau - 1)/alpha # calculates the lower bound for the proximal operator.
+    high = tau/alpha # calculates the upper bound for the proximal operator.
+    return xi - np.minimum((tau - 1)/alpha, np.minimum(xi, tau/alpha)) # applies the proximal operator to the input vector.
 
 def global_operator(vec, maskT, KrU, KrU_T, Qu, psi, sigma, R, M):
     """
-    Constructs linear operator used in global ADMM algorithm.
+    Constructs the linear operator used in the global ADMM optimisation steps of the QKTF algorithm.
 
     Args:
-        vec: input vector
-        maskT: mask matrix transposed
-        KrU: khatri-rao product for construction of H_d
-        KrU_T: transpose of KrU
-        Qu: covariance matrix for global component in dimension d
-        psi: global regularisation
-        sigma: global ADMM penalty
-        R, M: dimensions of input tensor in dimension d
+        vec (ndarray): vector to be multiplied by the global operator.
+        maskT (ndarray): boolean array indicating the observed entries of the tensor.
+        KrU (ndarray): Khatri-Rao product of the latent matrices.
+        KrU_T (ndarray): transpose of the Khatri-Rao product of the latent matrices.
+        Qu (ndarray): covariance matrix used for covariance tapering in dimension d.
+        psi (float):  smoothness parameter for covariance tapering.
+        sigma (float): ADMM penalty parameter.
+        R, M (int):
+
+    Returns:
+        ndarray: linear operator used in the Conjugate Gradient method for the global ADMM optimisation steps of the QKTF algorithm.
     """
-    X = vec.reshape(R, M, order = 'F')
-    temp = KrU @ X
-    temp *= maskT
-    Ap1 = sigma * (KrU_T @ temp)
-    Ap2 = psi * (X @ Qu)
+    X = vec.reshape(R, M, order = 'F') # reshapes vector to match the dimension of fixed tensor
+    temp = KrU @ X # computes the left-hand side product of Khatri-Rao product and the reshaped vector
+    temp *= maskT # applies the mask through right-hand side multiplication - zeroes out the unobserved entries
+    Ap1 = sigma * (KrU_T @ temp) # computes the first part of the linear operator - sigma*(H_d^T*O_d'^T*O_d'*H_d)
+    Ap2 = psi * (X @ Qu) # computes the second part of the linear operator - psi*(K_d^u)^{-1})
     return (Ap1 + Ap2).ravel(order = 'F')
 
-def global_admm(Qu, psi, sigma, KrU, mask_matrixT, YR_tilde, priorvalue, max_iter, tau, z, theta, sum_obs, total_data, R):
+def global_admm(Qu, KrU, mask_matrixT, mask_matrix, YR_tilde, priorvalue, z, theta, psi, sigma, max_iter, tau, sum_obs, total_data):
     """
-    Global ADMM algorithm for updating latent matrices in each dimension.
+    Global ADMM algorithm for updating the latent matrices in the QKTF algorithm.
 
     Args:
-        Qu: covariance matrix for global component in dimension d
-        psi: global regularisation
-        sigma: global ADMM penalty
-        KrU: khatri-rao product for construction of H_d
-        mask_matrixT: mask matrix transposed
-        YR_tilde: input tensor
-        priorvalue: initial value for latent matrix in dimension d
-        max_iter: maximum number of iterations
-        tau: quantile parameter
-        z: initial value for auxiliary variable
-        theta: initial value for lagrangian multiplier
-        sum_obs: number of observed entries
-        total_data: total number of data entries
-    
-    Returns:
-        u_vec: updated latent matrix in dimension d
-        z_vec: updated auxiliary variable
-        theta_flat: updated lagrangian multiplier
-        info: CG convergence information
-    """
-    M = YR_tilde.shape[1]
-    x0 = priorvalue.copy()
-    KrU_T = KrU.T
-    n = R * M
+        Qu (ndarray): covariance matrix used for covariance tapering in dimension d.
+        KrU (ndarray): Khatri-Rao product of the latent matrices.
+        mask_matrixT (ndarray): transpose of the boolean array indicating the observed entries of the tensor.
+        YR_tilde (ndarray): fixed tensor vec(G_(d)^T)
+        priorvalue (ndarray): previous iteration of latent matrix as first guess for algorithm.
+        z, theta (ndarray): auxiliary and Lagrange multiplier variables for the ADMM algorithm.
+        psi (float): smoothness parameter for covariance tapering.
+        sigma (float): ADMM penalty parameter.
+        max_iter (int): maximum number of iterations for the ADMM algorithm.
+        tau (float): quantile parameter for ADMM algorithm.
+        sum_obs (int): number of observed entries in the tensor.
+        total_data (int): total number of entries in the tensor.
 
-    # ========== ADMM iterations ==========
+    Returns:
+        r_vec (ndarray): updated latent matrix after the global ADMM optimisation steps of the QKTF algorithm.
+        a_vec (ndarray): auxiliary variable after the global ADMM optimisation steps of the QKTF algorithm.
+        v_vec (ndarray): Lagrange multiplier variable after the global ADMM optimisation steps of the QKTF algorithm.
+    """
+    R, M = YR_tilde.shape # represents the shape of H_d^T*O_d'^T*O_d'*vec(G_(d)^T) which is size RI_d.
+    x0 = priorvalue.copy() # sets the initial guess for the ADMM algorithm as the previous iteration of the latent matrix.
+    KrU_T = KrU.T # computes the transpose of the Khatri-Rao product of the latent matrices.
+    print(f"x0: {x0}")
+    print(f"x0 shape: {x0.shape}")
+    print(f"YR_tilde shape: {YR_tilde.shape}")
+    print(f"KrU_T shape: {KrU_T.shape}")
+    print(f"mask_matrixT shape: {mask_matrixT.shape}")
+    print(f"mask_matrix shape: {mask_matrix.shape}")
+
     for j in range(max_iter):
-        z_prev = z.copy()
-        rhs_mat = sigma * (YR_tilde - z) - theta
-        rhs_mat *= mask_matrixT
-        b_mat = KrU_T @ rhs_mat
-        b = b_mat.ravel(order = 'F')
-    
-        # latent matrix update
-        def matvec(v):
-            return global_operator(v, mask_matrixT, KrU, KrU_T, Qu, psi, sigma, R, M)
+        z_prev = z.copy() # stores the previous value of the auxiliary variable for convergence checking.
+        b = sigma * (YR_tilde - z) - theta # computes inside the bracket of 'b' - used in the Conjugate Gradient method.
+        b = KrU @ (mask_matrixT * b) # applies the O_d'^T*H_d^T to the left-hand side of 'b'.
+        print(f"shape of b: {b.shape}")
+
+        def matvec(vec): # performs y = Ax for the linear operator used in the Conjugate Gradient method.
+            return global_operator(vec, mask_matrixT, KrU, KrU_T, Qu, psi, sigma, R, M) # returns the linear operator used in the Conjugate Gradient method.
         
-        A_op = linalg.LinearOperator((n, n), matvec=matvec, dtype=b.dtype)
-        u_vec, gcg_info = linalg.cg(A_op, b, x0 = x0, atol = 1e-4, maxiter = max_iter)
-    
-        # auxiliary variable update
-        u_mat = u_vec.reshape(R, M, order = 'F')
-        H_u = KrU @ u_mat
-        H_u += mask_matrixT
-        alpha = sum_obs * sigma
-        eta = YR_tilde - theta - H_u
+        # u-update using Conjugate Gradient method.
 
-        z = prox_map(eta, alpha, tau)
-    
-        # lagrangian multiplier update
-        theta = theta + sigma * (H_u + z - YR_tilde)
+        A = linalg.LinearOperator((R*M, R*M), matvec=matvec, dtype=b.dtype) # creates a linear operator for the Conjugate Gradient method, using the matvec function defined above.
+        u, info = linalg.cg(A, b, x0=x0, atol=1e-5, maxiter=max_iter) # performs the Conjugate Gradient method to solve vec(u).
+        print(f"u shape: {u.shape}")
+        u = u.reshape(R, M, order = 'F')# reshapes the solution of the Conjugate Gradient method to match the dimension of the fixed tensor.
+        x0 = u.copy() # updates the initial guess for the next iteration of the ADMM algorithm as the current solution of the latent matrix.
+        print(f"x0: {x0.shape}")
+        temp = KrU @ u # computes the H_d*vec(u) product.
+        temp *= mask_matrix # applies the mask.
+        print(f"temp shape: {temp.shape}")
 
-        # convergence criterion
-        res_pri = H_u + z - YR_tilde
-        res_dual = sigma * KrU_T @ (mask_matrixT * (z - z_prev))
-        eps_pri = np.sqrt(sum_obs) * 1e-4 + 1e-4 * np.maximum(np.maximum(np.linalg.norm(H_u), np.linalg.norm(z)), np.linalg.norm(YR_tilde))
-        eps_dual = np.sqrt(total_data) * 1e-4 + 1e-4 * np.linalg.norm(KrU_T @ theta)
+        # z-update using Proximal operator.
 
-        if np.linalg.norm(res_pri) <= eps_pri and np.linalg.norm(res_dual) <= eps_dual:
-            break  
+        
 
-    return u_vec, z, theta, gcg_info
-    
-def local_operator(vec, pos_obs, Kr, gamma, lambda_, N):
+                           
+
+
+def qktf(I, Omega, lengthscaleU: list, varianceU: list, tapering_range, d_maternU, R, psi, sigma, tau, max_iter, epsilon):
     """
-    Constructs linear operator for local ADMM algorithm.
+    Quantized Kernelized Tensor Factorization (QKTF) algorithm for tensor completion.  
 
     Args:
-        vec: input vector
-        pos_obs: indices of observed entries
-        Kr: covariance matrix for local component in each dimension
-        lambda_: local ADMM regularisation
-        d1, d2, d3: dimensions of tensor
-        
-    Returns:
-        Ap[pos_obs] + lambda_ * vec: linear operator
-    """
-    x = np.zeros(N)
-    x[pos_obs] = vec
-    Ap = lambda_ * kroneckerMVM(Kr, x, N)
-    return Ap[pos_obs] + gamma * vec
-
-def local_admm(lambda_, gamma, priorvalue, a, v, Kr, mask_matrixT, pos_obs, YR_tilde, max_iter, tau, total_data, num_obs, N):
-    """
-    Local ADMM algorithm
-
-    Args:
-        lambda_: local ADMM regularisation
-        priorvalue: initial value for rtensor
-        a: initial value for auxiliary variable
-        v: initial value for lagrangian multiplier
-        Kd, Kt, Ks: covariance matrix for local component in each dimension
-        pos_obs: indices of observed entries
-        sum_obs: number of observed entries
-        YR_tilde: input tensor
-        mask_matrixT: mask matrix transposed
-        max_iter: maximum number of iterations 
-        tau: quantile parameter
-        total_data: total number of data entries
+        I (ndarray): input data tensor.
+        Omega (ndarray): binary mask - same shape as I.
+        lengthscaleU (list): list of lengthscales for the global covariance tapering in each dimension.
+        varianceU (list): list of variances for the global covariance tapering in each dimension.
+        tapering_range (float): range parameter for the global covariance tapering.
+        d_maternU (float): degree of Matern kernel for global covariance tapering.
+        R (int): CP decomposition rank used in reconstruction of global component.
+        psi (float): smoothness parameter for covariance tapering.
+        sigma (float): ADMM penalty parameter.
+        tau (float): quantile parameter for ADMM algorithm.
+        max_iter (int): maximum number of iterations for the ADMM algorithm.
+        epsilon (float): convergence threshold for the ADMM algorithm.
 
     Returns:
-        r_obs = updated residual for observed entries
-        a_vec = updated auxiliary variable
-        v_vec = updated lagrangian multiplier
-        info = CG convergence information
-    """
-    shape_arr = numpy.array(N)
-    Y_obs = (YR_tilde.ravel(order = 'F'))[pos_obs]
-    a_vec = a.ravel(order = 'F')
-    v_vec = v.ravel(order = 'F')
-    x0 = priorvalue.copy()
-
-    # ========== ADMM iterations ==========
-    for j in range(max_iter):
-        a_prev = a_vec.copy()
-        rhs_mat = Y_obs - a_vec - v_vec
-        b = (lambda_ * rhs_mat)
-
-        # r-update
-        def matvec(v):
-            return local_operator(v, pos_obs, Kr, lambda_, gamma, N)
-        
-        ar = linalg.LinearOperator((num_obs, num_obs), matvec=matvec, dtype=b.dtype)
-        r_vec, lcg_info = linalg.cg(ar, b, x0 = x0, atol = 1e-4, maxiter = max_iter)
-
-        # auxiliary variable update
-        zeta = Y_obs - v_vec - r_vec
-        alpha = num_obs * lambda_
-
-        a_vec = prox_map(zeta, alpha, tau)
-
-        # lagrangian multiplier update
-        v_vec = v_vec + lambda_ * (r_vec + a_vec - Y_obs)
-
-        # convergence criterion
-        res_pri = r_vec + a_vec - Y_obs
-        res_dual = lambda_ * (a_vec - a_prev)
-        eps_pri = np.sqrt(num_obs) * 1e-4 + 1e-4 * np.maximum(np.maximum(np.linalg.norm(r_vec), np.linalg.norm(a_vec)), np.linalg.norm(Y_obs))
-        eps_dual = np.sqrt(total_data) * 1e-4 + 1e-4 * np.linalg.norm(v_vec)
-
-        if np.linalg.norm(res_pri) <= eps_pri and np.linalg.norm(res_dual) <= eps_dual:
-            break
-
-    return r_vec, a_vec, v_vec, lcg_info
-
-def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, varianceR: list, tapering_range, d_maternU, d_maternR, R, psi, sigma, lambda_, gamma, tau, maxiter, K0, epsilon):
-    """
-    QKTF for an arbitrary tensor.
-    
-    Args:
-        I: Input tensor (arbitrary dimension)
-        Omega: Binary mask (same shape as I)
-        lengthscaleU: List of lengthscales for each dimension (reference for comparing dimensions)
-        lengthscaleR: List of lengthscales for each dimension - local component (reference for comparing dimensions)
-        varianceU: List of variances for each dimension - global
-        varianceR: List of variances for each dimension - local
-        tapering_range: Tapering range for local component
-        d_maternU: Degree of Matern kernel for global
-        d_maternR: Degree of Matern kernel for local
-        R: Tensor rank - pre-specified through CP decomposition
-        psi: regularisation for global component
-        sigma: global ADMM penalty
-        lambda_: local ADMM penalty
-        tau: quantile parameter
-        maxiter: maximum number of iterations
-        K0: number of iterations before local component is updated
-        epsilon: convergence criterion
-
-    Returns:
-        I_recovery: recovered tensor
-        R_component: local component of recovery
-        M_component: global component of recovery
+        M_component (ndarray): reconstructed global component of the tensor.
     """
     # ========== Setup ==========
-    N = I.shape
-    N = numpy.array(N)
-    D = len(N)
-    total_data = numpy.prod(N)
-    maxP = float(np.max(I))
+    N = I.shape # sets N as the shape of the input tensor.
+    N = numpy.array(N) # converts N to a numpy array - created using NumPy and not CuPy as it's used for integer indexing. CuPy arrays cannot be used for integer indexing.
+    
+    D = I.ndim # sets D as the number of dimensions of the input tensor.
 
-    # Validate inputs
-    assert len(lengthscaleU) == D
-    assert len(lengthscaleR) == D
-    assert len(varianceU) == D
-    assert len(varianceR) == D
-    assert I.shape == Omega.shape
-    assert R > 0
-    assert 0 < tau < 1
+    # Assert inputs
+    assert len(lengthscaleU) == D # ensures the number of lengthscales provided matches the number of dimensions of the input tensor.
+    assert len(varianceU) == D # ensures the number of variances provided matches the number of dimensions of the input tensor.
+    assert I.shape == Omega.shape # ensures the input tensor and the binary mask have the same shape.
+    assert R > 0 # ensures the CP decomposition rank is a positive integer.
+    assert 0 < tau < 1 # ensures the quantile parameter is between 0 and 1.
 
-    # ========== Pre-processing ==========
+    # ========== Pre-processing data ==========
 
     # Binary indicator matrix
-    Omega = Omega.astype(bool)
-    pos_miss = np.where(Omega == 0)
-    num_obs = int(np.sum(Omega))
+    Omega = Omega.astype(bool) # converts the binary mask to a boolean array - done due to memory efficiency (smaller than index arrays) and avoids explicit loops.
+    pos_miss = np.where(Omega == 0) # creates a tuple of arrays containing the indices of the missing entries in the tensor - can be used directly for indexing and can be unpacked correctly.
+    num_obs = int(np.sum(Omega)) # calculates the number of observed entries in the tensor.
+    total_data = int(np.sum(I)) # calculates the total number of entries in the tensor.
 
     # Mask construction
-    mask_matrix = [unfold(Omega, d) for d in range(D)]
-    mask_matrixT = [mask_matrix[d].T for d in range(D)]
-    mask_flat = [mask_matrix[d].ravel(order = 'F') for d in range(D)]
-    pos_obs = [np.where(mask_flat[d] == 1)[0] for d in range(D)]
-    Omega_flat = Omega.ravel(order = 'F')
-    pos_obs_global = np.where(Omega_flat == 1)[0]
-    num_obs_global = len(pos_obs_global)
+    mask_matrix = [unfold(Omega, d) for d in range(D)] # creates a list of D matrices, where each matrix is the mode-d unfolding of Omega.
+    mask_matrixT = [mask_matrix[d].T for d in range(D)] # creates a list of D matrices, where each matrix is the transpose of the mode-d unfolding of Omega.
+    mask_flat = [mask_matrix[d].ravel(order = 'F') for d in range(D)] # creates a list of D vectors, where each vector is the flattened version of the mode-d unfolding of Omega.
+    pos_obs = [np.where(mask_flat[d] == 1)[0] for d in range(D)] # creates a list of D arrays, containing arrays of observed entries.
 
     # Data centering
-    train_matrix = I * Omega
-    train_matrix = train_matrix[train_matrix > 0]
-    Isubmean = I - np.mean(train_matrix)
-    T = Isubmean * Omega
+    train_matrix = I * Omega # creates a mask of the tensor - setting indices to zero where there is data missing.
+    train_matrix = train_matrix[train_matrix > 0] # creates a matrix of only the observed entries into a 1D array.
+    Isubmean = I - np.mean(train_matrix) # centers the data by subtracting the mean of the observed entries from all entries in the tensor.
+    T = Isubmean * Omega # creates a tensor of the centered observed entries - setting indices to zero where there is data missing.
 
-    # ========== Build covariance matrices ==========
-    hyper_Ku, hyper_Kr = [None] * D, [None] * D
-    Ku, Kr = [None] * D, [None] * D
-    invKu = [None] * D
+    # ========== Building covariance matrices ==========
+    hyper_Ku = [None] * D # creates an empty list to store the hyperparameters for the global covariance tapering, list length = D.
+    Ku = [None] * D # creates an empty list to store the covariance matrices for the global covariance tapering, list length = D.
+    inv_Ku = [None] * D # creates an empty list to store the inverse covariance matrices for the global covariance tapering, list length = D.
 
-    for d in range(D):
-        x = np.arange(1, N[d] + 1)
+    for d in range(D): # iterates through each dimension of the input tensor.
+        x = np.arange(1, N[d] + 1) # creates a vector of integers from 1 to the size of the current dimension - used as input for the covariance function.
 
         # Global covariance
-        hyper_Ku[d] = [np.log(lengthscaleU[d]), np.log(varianceU[d])]
-        Ku[d] = cov_matern(d_maternU, hyper_Ku[d], x)
-        invKu[d] = np.linalg.inv(Ku[d])
-
-        # Local covariance
-        hyper_Kr[d] = [np.log(lengthscaleR[d]), np.log(varianceR[d]), np.log(tapering_range)]
-        TaperM = bohman(hyper_Kr[d][0], x)
-        Kr[d] = csr_matrix(cov_matern(d_maternR, hyper_Kr[d][:2], x) * TaperM)
+        hyper_Ku[d] = [np.log(lengthscaleU[d]), np.log(varianceU[d])] # sets the dth dimension of hyperparameters as log of lengthscale and log of variance.
+        Ku[d] = cov_matern(d_maternU, hyper_Ku[d], x) # computes the covariance matrix for the dth dimension using the Matern covariance function.
+        inv_Ku[d] = np.linalg.inv(Ku[d]) # inverts the covariance matrix for the dth dimension - used in the global ADMM optimisation steps of the QKTF algorithm.
 
     # ========== Initialisation for ADMM iterations ==========
-    X = T
-    X[pos_miss] = T.sum() / num_obs
+    X = T # sets the initial value of the fixed tensor as the centered observed entries.
+    X[pos_miss] = T.sum() / num_obs # sets the missing entries of the fixed tensor as the mean of the observed entries.
 
-    # Variable initialisation
-    z, theta = [], []
-    for d in range(D):
-        dims = [N[i] for i in range(D) if i != d]
-        unfold_shape = (int(np.prod(np.array(dims))), N[d])
-        z.append(np.zeros(unfold_shape))
-        theta.append(np.zeros(unfold_shape))
-    U = [np.random.randn(N[d], R) * 0.1 for d in range(D)] 
+    z = np.zeros(num_obs) # initialises the auxiliary variable for the ADMM algorithm as a vector of zeros, length equal to the number of observed entries.
+    theta = np.zeros(num_obs) # initialises the Lagrange multiplier variable for the ADMM algorithm as a vector of zeros, length equal to the number of observed entries.
+    U = [np.random.rann(N[d], R) * 0.1 for d in range(D)] # intialises the latent matrices as random values from a standard Gaussian distribution, scaled by 0.1 to ensure no crashing.
+    Uvector = [U[d].ravel(order = 'F') for d in range(D)] # creates a list of D vectors, where each vector is the flattened version of the corresponding latent matrix.
+    UTvector = [U[d].T.ravel(order = 'F') for d in range(D)] # creates a list of D vectors, where each vector is the flattened version of the transpose of the corresponding latent matrix.
+    rtensor = np.zeros(N) # initialises the local tensor with the same shape as the input data, filled with zeros.
 
-    rtensor = np.zeros(N) 
-    y = np.zeros(N) 
-    v = np.zeros(num_obs_global) 
-    a = np.zeros(num_obs_global)
+    d_all = np.arange(D) # creates a vector of integers from 0 to D-1 - used for indexing.
 
-    Uvector = [U[d].ravel(order = 'F') for d in range(D)]
-    UTvector = [U[d].T.ravel(order = 'F') for d in range(D)]
-    rvector = rtensor.ravel(order='F')
-    rvector_temp = rtensor.ravel(order = 'F')
+    pbar = tqdm(total=max_iter, desc="QKTF Iterations") # creates a progress bar for the ADMM iterations.
+    iter = 0 # initialises the iteration counter for the ADMM algorithm.
 
-    # Initial reconstruction
-    M = reconstruct_tensor(U, N)
-    X[pos_miss] = M[pos_miss] + rtensor[pos_miss]
+    while iter < max_iter: # runs the ADMM iterations until the maximum number of iterations is reached.
+        Gtensor = X - rtensor # initialises the global component of the tensor as the initial fixed tensor minus the local tensor.
+        Gtensor_mask = Gtensor * Omega # masks the global tensor - setting indices to zero where there is data missing.
 
-    d_all = np.arange(0, D) # array of all dimensions
-    train_norm = np.linalg.norm(T)
-    last_ten = T.copy()
-    pbar = tqdm(total=maxiter, desc="QKTF Iterations")
-    iter = 0
+        # Global component iteration
+        for d in range(D): # iterates through each dimension of the input tensor.
+            Gtensor_unfold = unfold(Gtensor_mask, d) # unfolds the masked global tensor along the current dimension - creates O_d'*vec(G_(d)^T) - now has size |Omega|.
+            KrU = build_khatri_rao(U, d) # builds the Khatri-Rao product of the latent matrices, excluding the current dimension - creates H_d.
 
-    # ========== Main algorithm iterations ==========
-
-    while iter < maxiter:
-
-        # Update global component
-        for d in range(D):
-            dsub = np.delete(d_all, d)
-            dsub = np.array(dsub)
-            KrU = build_khatri_rao(U, dsub)
-
-            X_unfold = unfold(X, d)
-
-            UTvector[d], z[d], theta[d], gcg_info = global_admm(
-                invKu[d], psi, sigma, KrU, mask_matrixT[d], X_unfold, UTvector[d], 1000, tau, z[d], theta[d], num_obs, total_data, R)
-            U[d] = (UTvector[d].reshape(R, N[d], order = 'F')).T
-        
-        # Reconstruct global component
-        M = reconstruct_tensor(U, N)    
-    
-        X[pos_miss] = M[pos_miss] + rtensor[pos_miss]
-
-        # Update local component
-        if iter >= K0:
-            print(f"Iter {iter}: rtensor norm = {np.linalg.norm(rtensor):.4f}")
-            print(f"Iter {iter}: rvecotr_temp unobserved = {rvector_temp[pos_miss[0]][:5]}")
-            Ltensor = X - M
-            Ltensor_mask = Ltensor * Omega
-
-            r_obs, a, v, lcg_info = local_admm(
-                lambda_, gamma, rvector_temp[pos_obs_global], a, v, Kr, mask_matrixT, pos_obs_global, Ltensor_mask, 1000, tau, total_data, num_obs_global, N)
-            rvector_temp = np.zeros(total_data)
-            rvector_temp[pos_obs_global] = r_obs
-            rvector = kroneckerMVM(Kr, rvector_temp, N)
-            rtensor = rvector.reshape(N, order = 'F')
-            for d in range(D):
-                rtensor_unfold = unfold(rtensor, d)
-                idx = np.sum(mask_matrix[d], axis=0) > 0
-                if np.sum(idx) > 1: # Need at least 2 columns for covariance
-                    rtensor_fold_d = rtensor_unfold[:, idx]
-                    cov_dense = np.cov(rtensor_fold_d) # Updating local covariance  
-                    x = np.arange(1, N[d] + 1)
-                    TaperM = bohman(hyper_Kr[d][0], x)
-                    Kr[d] = csr_matrix(cov_dense * TaperM) 
-            
-        else:
-            rtensor = np.zeros_like(rtensor)
-
-        # Update X
-        X[pos_miss] = M[pos_miss] + rtensor[pos_miss]
-
-        # Convergence checks
-        iter += 1
-        tol = np.linalg.norm((X - last_ten)) / train_norm
-        last_ten = X.copy()
-        pbar.set_postfix({'tol': f'{tol:.2e}', 'M_norm': f'{np.linalg.norm(M):.2e}', 'R_norm': f'{np.linalg.norm(rtensor):.2e}'})
-        pbar.update(1)
-
-        if (iter >= maxiter) or (tol < epsilon):
-            pbar.close()
-            break
-
-        I_recovery = X + np.mean(train_matrix)
-
-    return I_recovery, M + np.mean(train_matrix), rtensor
-
-
-
-        
-
-
-
-
-
+            UTvector[d], z[d], theta[d] = global_admm(inv_Ku[d], KrU, mask_matrixT[d], mask_matrix[d], Gtensor_unfold, UTvector[d], z[d], theta[d], psi, sigma, 100, tau, num_obs, total_data)
