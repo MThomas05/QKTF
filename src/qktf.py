@@ -303,15 +303,18 @@ def qktf(I, Omega, lengthscaleU: list, varianceU: list, tapering_range, d_matern
 
     z = np.zeros(num_obs) # initialises the auxiliary variable for the ADMM algorithm as a vector of zeros, length equal to the number of observed entries.
     theta = np.zeros(num_obs) # initialises the Lagrange multiplier variable for the ADMM algorithm as a vector of zeros, length equal to the number of observed entries.
-    U = [np.random.rann(N[d], R) * 0.1 for d in range(D)] # intialises the latent matrices as random values from a standard Gaussian distribution, scaled by 0.1 to ensure no crashing.
+    U = [np.random.randn(N[d], R) * 0.1 for d in range(D)] # intialises the latent matrices as random values from a standard Gaussian distribution, scaled by 0.1 to ensure no crashing.
     Uvector = [U[d].ravel(order = 'F') for d in range(D)] # creates a list of D vectors, where each vector is the flattened version of the corresponding latent matrix.
     UTvector = [U[d].T.ravel(order = 'F') for d in range(D)] # creates a list of D vectors, where each vector is the flattened version of the transpose of the corresponding latent matrix.
     rtensor = np.zeros(N) # initialises the local tensor with the same shape as the input data, filled with zeros.
 
     d_all = np.arange(D) # creates a vector of integers from 0 to D-1 - used for indexing.
 
+    train_norm = np.linalg.norm(T) # calculates the norm of the tensor of the centered observed entries - used for convergence checking.
+    last_ten = X.copy() # initialises a tensor to store the value of the fixed tensor from the previous iteration for convergence checking.
     pbar = tqdm(total=max_iter, desc="QKTF Iterations") # creates a progress bar for the ADMM iterations.
     iter = 0 # initialises the iteration counter for the ADMM algorithm.
+    
 
     while iter < max_iter: # runs the ADMM iterations until the maximum number of iterations is reached.
         Gtensor = X - rtensor # initialises the global component of the tensor as the initial fixed tensor minus the local tensor.
@@ -322,4 +325,19 @@ def qktf(I, Omega, lengthscaleU: list, varianceU: list, tapering_range, d_matern
             Gtensor_unfold = unfold(Gtensor_mask, d) # unfolds the masked global tensor along the current dimension - creates O_d'*vec(G_(d)^T) - now has size |Omega|.
             KrU = build_khatri_rao(U, d) # builds the Khatri-Rao product of the latent matrices, excluding the current dimension - creates H_d.
 
+            # Actual Global ADMM optimisation call.
             UTvector[d], z[d], theta[d] = global_admm(inv_Ku[d], KrU, mask_matrixT[d], mask_matrix[d], Gtensor_unfold, UTvector[d], z[d], theta[d], psi, sigma, 100, tau, num_obs, total_data)
+            U[d] = (UTvector[d].reshape(R, N[d], order = 'F')).T # reshaoes the latenet matrix back to its original shape.
+        
+        M = reconstruct_tensor(U, N) # reconstructs the global component of the tensor from the CP decomposition of the latent matrices.
+        X[pos_miss] = M[pos_miss] + rtensor[pos_miss] # updates the missing entries of the fixed tensor as the sum of the global component and the local tensor.
+
+        # Convergence checks.
+        iter += 1 # increments the iteration counter.
+        tol = np.linalg.norm((X - last_ten)) / train_norm # calculates the convergence metric as the relative change in the fixed tensor.
+        last_ten = X.copy() # updates the tensor for convergence checking to the current fixed tensor.
+        if (tol < epsilon) or (iter >= max_iter):
+            print(f"Convergence reached at iteration {iter} with tolerance {tol:.6f}.")
+            break
+        
+    return X, M + np.mean(train_matrix)
