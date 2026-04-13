@@ -67,18 +67,6 @@ def fold(mat, dim, mode):
             index.append(i) # adds the current dimension to the index list
     return np.moveaxis(np.reshape(mat, list(dim[index]), order = 'F'), 0, mode)
 
-def reconstruct_tensor(U, shape):
-    """
-    Reconstructs the global component of the tensor from CP decomposition of the latent matrices.
-
-    Args:
-        U (list): list of D latent matrices, where D is the number of dimensions of the input tensor.
-        shape (tuple): shape of the original tensor.
-
-    Returns:
-        ndarray: reconstructed global component of the tensor.
-    """
-
 def build_khatri_rao(U, d):
     """
     Builds the Khatri-Rao product of a list of matrices, all dimensions except the current one.
@@ -99,7 +87,29 @@ def build_khatri_rao(U, d):
         for i in range(1, len(matrices)): # iterates through the list of matrices in reverse order, excluding the current dimension.
             result = khatri_rao(result, matrices[i]) # computes the Khatri-Rao product of the current result and the next matrix in the list.
         return result
-    
+
+def reconstruct_tensor(U,  shape):
+    """
+    Reconstructs the global component of the tensor from CP decomposition of the latent matrices.
+
+    Args:
+        U (list): list of D latent matrices, where D is the number of dimensions of the input tensor.
+        shape (tuple): shape of the original tensor.
+
+    Returns:
+        ndarray: reconstructed global component of the tensor.
+    """
+    D = len(shape) # gets the number of dimensions.
+    dims_except_0 = list(range(1, D)) # creates a list of dimensions except the first dimension - used for mode-0 unfolding.
+    if len(dims_except_0) > 0: # checks to ensure there's more than one dimension - if not, the global component is just the first latent matrix.
+        KrU = build_khatri_rao(U, dims_except_0) # builds the Khatri-Rao product of the latent matrices, excluding the first dimension.
+        M_unfold = U[0] @ KrU.T # computes the mode-0 unfolding of the global component using the first latent matrix and the Khatri-Rao product.  
+    else:
+        M_unfold = U[0] # if there's only one dimension, the global component is just the first latent matrix.
+
+    M = M_unfold.reshape(shape, order = 'F') # reshapes the mode-0 unfolding of the global component to match the original tensor shape.
+    return M
+
 def prox_map(xi, alpha, tau):
     """
     Proximal operator for the z-update step of the ADMM algorithm in the QKTF algorithm.
