@@ -206,6 +206,18 @@ def global_admm(Qu, KrU, mask_matrixT, mask_matrix, YR_tilde, priorvalue, z, the
         theta = theta + sigma * (temp + z - YR_tilde) # updates the Lagrange multiplier variable.
         print(f"theta shape: {theta.shape}")
 
+        # convergence criterion.
+        res_pri = temp + z - YR_tilde # computes the primal residual for convergence checking.
+        res_temp = KrU_T @ (z - z_prev)
+        res_temp *= mask_matrixT
+        res_dual = sigma * res_temp # computes the dual residual for convergence checking.
+        eps_pri = np.sqrt(sum_obs) * 1e-4 + 1e-4 * max(np.linalg.norm(temp), np.linalg.norm(z), np.linalg.norm(YR_tilde)) # computes the primal feasibility tolerance.
+        eps_dual = np.sqrt(R*M) * 1e-4 + 1e-4 * np.linalg.norm(KrU_T @ theta) # computes the dual feasibility tolerance.
+
+        if np.linalg.norm(res_pri) <= eps_pri and np.linalg.norm(res_dual) <= eps_dual: # checks for convergence of the ADMM algorithm.
+            print(f"Convergence reached at iteration {j+1}.")
+            break
+
         return u, z, theta, info
 
 def qktf(I, Omega, lengthscaleU: list, varianceU: list, tapering_range, d_maternU, R, psi, sigma, tau, max_iter, epsilon):
