@@ -199,6 +199,8 @@ def global_admm(Qu, KrU, mask_matrixT, mask_matrix, YR_tilde, priorvalue, z, the
 
         A = linalg.LinearOperator((R*M, R*M), matvec=matvec, dtype=b.dtype) # creates a linear operator for the Conjugate Gradient method, using the matvec function defined above.
         u, info = linalg.cg(A, b, x0=x0, atol=1e-5, maxiter=max_iter) # performs the Conjugate Gradient method to solve vec(u).
+        print(f"CG info: {info}, bnorm = {np.linalg.norm(b):.4f}, unorm = {np.linalg.norm(u):.4f}")
+        print(f"u range: [{np.min(u):.4f}, {np.max(u):.4f}]")
         print(f"u shape: {u.shape}")
         umat = u.reshape(R, M, order = 'F')# reshapes the solution of the Conjugate Gradient method to match the dimension of the fixed tensor.
         temp = KrU @ umat # computes the H_d*vec(u) product.
@@ -310,6 +312,7 @@ def qktf(I, Omega, lengthscaleU: list, varianceU: list, tapering_range, d_matern
         z.append(np.zeros(unfold_shape))
         theta.append(np.zeros(unfold_shape))
     U = [np.random.randn(N[d], R) * 0.1 for d in range(D)] # intialises the latent matrices as random values from a standard Gaussian distribution, scaled by 0.1 to ensure no crashing.
+    print(f"Initial U[0]:\n {U[0][:3, :]}")
     Uvector = [U[d].ravel(order = 'F') for d in range(D)] # creates a list of D vectors, where each vector is the flattened version of the corresponding latent matrix.
     UTvector = [U[d].T.ravel(order = 'F') for d in range(D)] # creates a list of D vectors, where each vector is the flattened version of the transpose of the corresponding latent matrix.
     rtensor = np.zeros(N) # initialises the local tensor with the same shape as the input data, filled with zeros.
@@ -352,6 +355,7 @@ def qktf(I, Omega, lengthscaleU: list, varianceU: list, tapering_range, d_matern
         iter += 1 # increments the iteration counter.
         tol = np.linalg.norm((X - last_ten)) / train_norm # calculates the convergence metric as the relative change in the fixed tensor.
         last_ten = X.copy() # updates the tensor for convergence checking to the current fixed tensor.
+        
         if (tol < epsilon) or (iter >= max_iter):
             print(f"Convergence reached at iteration {iter} with tolerance {tol:.6f}.")
             break
