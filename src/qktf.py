@@ -218,6 +218,28 @@ def global_admm(Qu, KrU, mask_matrixT, mask_matrix, YR_tilde, priorvalue, z, the
 
     return u, z, theta, info
 
+def kronecker_mvm(Kr, vec, shape):
+    """
+    Calculates the local covariance matrices thorugh efficient Kronecker matrix-vector products - tranpose in identity happens implicitly through unfolding and folding.
+
+    Args:
+        Kr (list): list of covariance matrices for local operator.
+        vec (ndarray): input vector.
+        shape (tuple): shape of original tensor.
+    
+    Returns:
+        ndarray: covariances matrices for local operator.
+    """
+    D = len(shape) # gets the number of dimensions.
+    x = vec.reshape(shape, order = 'F') # reshapes to tensor size.
+
+    for d in range(D): # iterates through the dimensions.
+        x_unfold = unfold(x, d) # mode-d unfolding.
+        x_unfold = Kr[d] @ x_unfold # matrix multiplication.
+        x = fold(x_unfold, shape, d) # folds back to tensor.
+    
+    return x.ravel(order = 'F')
+
 def local_operator(vec, pos_obs, Kr, gamma, lambda_, N):
     """
     Constructs the local linear operator used in the local ADMM algorithm.
@@ -228,14 +250,14 @@ def local_operator(vec, pos_obs, Kr, gamma, lambda_, N):
         Kr (list): list of covariance matrices for the local linear operator.
         gamma (float): covariance regularisation parameter.
         lambda_ (float): local ADMM penalty parameter.
-        N (int): number of total entries
+        N (int): number of total entries.
 
     Returns:
         ndarray: linear operator used in the Conjugate Gradient method for the local ADMM optimisation steps of the QKTF algorithm. 
     """
     x = np.zeros(N) # zero-pads to vector of length N.
     x[pos_obs] = vec # slices the vector to the length of osberved entires - |Omega|.
-    Ap = kroneckerMVM(Kr, x, N) # constructs the covariance matrices via Kronecker MVM.
+    Ap = kronecker_mvm(Kr, x, N) # constructs the covariance matrices via Kronecker MVM.
     return lambda_ * Ap[pos_obs] + gamma * vec
 
 def qktf(I, Omega, lengthscaleU: list, varianceU: list, tapering_range, d_maternU, R, psi, sigma, tau, max_iter, epsilon):
