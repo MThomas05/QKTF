@@ -176,21 +176,12 @@ def global_admm(Qu, KrU, mask_matrixT, mask_matrix, YR_tilde, priorvalue, z, the
     x0 = priorvalue.copy() # sets the initial guess for the ADMM algorithm as the previous iteration of the latent matrix.
     KrU_T = KrU.T # computes the transpose of the Khatri-Rao product of the latent matrices.
     print(f"x0: {x0}")
-    print(f"x0 shape: {x0.shape}")
-    print(f"YR_tilde shape: {YR_tilde.shape}")
-    print(f"KrU_T shape: {KrU_T.shape}")
-    print(f"mask_matrixT shape: {mask_matrixT.shape}")
-    print(f"mask_matrix shape: {mask_matrix.shape}")
-    print(f"z shape: {z.shape}")
-    print(f"theta shape: {theta.shape}")
 
     for j in range(max_iter):
         z_prev = z.copy() # stores the previous value of the auxiliary variable for convergence checking.
         bmat = sigma * (YR_tilde - z) - theta # computes inside the bracket of 'b' - used in the Conjugate Gradient method.
         bmat = KrU_T @ (mask_matrixT * bmat)
         b = bmat.ravel(order='F')
-        print(f"shape of b: {b.shape}")
-        print(f"shape of bmat: {bmat.shape}")
 
         def matvec(vec): # performs y = Ax for the linear operator used in the Conjugate Gradient method.
             return global_operator(vec, mask_matrixT, KrU, KrU_T, Qu, psi, sigma, R, M) # returns the linear operator used in the Conjugate Gradient method.
@@ -199,26 +190,19 @@ def global_admm(Qu, KrU, mask_matrixT, mask_matrix, YR_tilde, priorvalue, z, the
 
         A = linalg.LinearOperator((R*M, R*M), matvec=matvec, dtype=b.dtype) # creates a linear operator for the Conjugate Gradient method, using the matvec function defined above.
         u, info = linalg.cg(A, b, x0=x0, atol=1e-5, maxiter=max_iter) # performs the Conjugate Gradient method to solve vec(u).
-        print(f"CG info: {info}, bnorm = {np.linalg.norm(b):.4f}, unorm = {np.linalg.norm(u):.4f}")
-        print(f"u range: [{np.min(u):.4f}, {np.max(u):.4f}]")
-        print(f"u shape: {u.shape}")
         umat = u.reshape(R, M, order = 'F')# reshapes the solution of the Conjugate Gradient method to match the dimension of the fixed tensor.
         temp = KrU @ umat # computes the H_d*vec(u) product.
         temp = mask_matrixT * temp # applies the mask.
-        print(f"temp shape: {temp.shape}")
 
         # z-update using Proximal operator.
 
         eta = YR_tilde - theta - temp # computes the input for the proximal operator.
         alpha = sum_obs * sigma # computes the alpha parameter for the proximal operator.
         z = prox_map(eta, alpha, tau) # applies the proximal operator to update the auxiliary variable.
-        print(f"z shape: {z.shape}")
-        print(f"z_prev shape: {z_prev.shape}")
 
         # theta-update.
 
         theta = theta + sigma * (temp + z - YR_tilde) # updates the Lagrange multiplier variable.
-        print(f"theta shape: {theta.shape}")
 
         # convergence criterion.
         res_pri = temp + z - YR_tilde # computes the primal residual for convergence checking.
@@ -233,6 +217,26 @@ def global_admm(Qu, KrU, mask_matrixT, mask_matrix, YR_tilde, priorvalue, z, the
             break
 
     return u, z, theta, info
+
+def local_operator(vec, pos_obs, Kr, gamma, lambda_, N):
+    """
+    Constructs the local linear operator used in the local ADMM algorithm.
+
+    Args:
+        vec (ndarray): vector to be multiplied by the local linear operator.
+        pos_obs (list): list of observed entries.
+        Kr (list): list of covariance matrices for the local linear operator.
+        gamma (float): covariance regularisation parameter.
+        lambda_ (float): local ADMM penalty parameter.
+        N (int): number of total entries
+
+    Returns:
+        ndarray: linear operator used in the Conjugate Gradient method for the local ADMM optimisation steps of the QKTF algorithm. 
+    """
+    x = np.zeros(N) # zero-pads to vector of length N.
+    x[pos_obs] = vec # slices the vector to the length of osberved entires - |Omega|.
+    Ap = kroneckerMVM(Kr, x, N) # constructs the covariance matrices via Kronecker MVM.
+    return lambda_ * Ap[pos_obs] + gamma * vec
 
 def qktf(I, Omega, lengthscaleU: list, varianceU: list, tapering_range, d_maternU, R, psi, sigma, tau, max_iter, epsilon):
     """
@@ -312,7 +316,6 @@ def qktf(I, Omega, lengthscaleU: list, varianceU: list, tapering_range, d_matern
         z.append(np.zeros(unfold_shape))
         theta.append(np.zeros(unfold_shape))
     U = [np.random.randn(N[d], R) * 0.1 for d in range(D)] # intialises the latent matrices as random values from a standard Gaussian distribution, scaled by 0.1 to ensure no crashing.
-    print(f"Initial U[0]:\n {U[0][:3, :]}")
     Uvector = [U[d].ravel(order = 'F') for d in range(D)] # creates a list of D vectors, where each vector is the flattened version of the corresponding latent matrix.
     UTvector = [U[d].T.ravel(order = 'F') for d in range(D)] # creates a list of D vectors, where each vector is the flattened version of the transpose of the corresponding latent matrix.
     rtensor = np.zeros(N) # initialises the local tensor with the same shape as the input data, filled with zeros.
@@ -323,7 +326,6 @@ def qktf(I, Omega, lengthscaleU: list, varianceU: list, tapering_range, d_matern
     last_ten = X.copy() # initialises a tensor to store the value of the fixed tensor from the previous iteration for convergence checking.
     pbar = tqdm(total=max_iter, desc="QKTF Iterations") # creates a progress bar for the ADMM iterations.
     iter = 0 # initialises the iteration counter for the ADMM algorithm.
-    
 
     while iter < max_iter: # runs the ADMM iterations until the maximum number of iterations is reached.
         Gtensor = X - rtensor # initialises the global component of the tensor as the initial fixed tensor minus the local tensor.
@@ -338,21 +340,20 @@ def qktf(I, Omega, lengthscaleU: list, varianceU: list, tapering_range, d_matern
 
             # Actual Global ADMM optimisation call.
             UTvector[d], z[d], theta[d], info = global_admm(inv_Ku[d], KrU, mask_matrixT[d], mask_matrix[d], Gtensor_unfold, UTvector[d], z[d], theta[d], psi, sigma, 100, tau, R, num_obs, total_data)
-            U[d] = (UTvector[d].reshape(R, N[d], order = 'F')).T # reshaoes the latent matrix back to its original shape.
-
-            print(f"After d = {d}, U[{d}] shape: {U[d].shape}")
-            print(f"U[{d}] min: {np.min(U[d]):.4f}, max: {np.max(U[d]):.4f}")
-            print(f"U[{d}] mean: {np.mean(U[d]):.4f}, std: {np.std(U[d]):.4f}")
-            print(f"U[{d}] sample: \n{U[d][:3, :]}")
+            print(f"UTvector{[d]} sample: \n{UTvector[d][:10]}")
+            U[d] = (UTvector[d].reshape(R, N[d], order = 'F')).T # reshapes the latent matrix back to its original shape.
         
         M = reconstruct_tensor(U, N) # reconstructs the global component of the tensor from the CP decomposition of the latent matrices.
         print(f"M min: {np.min(M):.4f}, max: {np.max(M):.4f}")
-        print(f"M mean: {np.mean(U[d]):.4f}, std: {np.std(M):.4f}")
+        print(f"M mean: {np.mean(M):.4f}, std: {np.std(M):.4f}")
         print(f"M sample: \n{M[:3, :]}")
         X[pos_miss] = M[pos_miss] + rtensor[pos_miss] # updates the missing entries of the fixed tensor as the sum of the global component and the local tensor.
 
+        Xori = X + np.mean(train_matrix)
+
         # Convergence checks.
         iter += 1 # increments the iteration counter.
+        print(f"iteration: {iter}")
         tol = np.linalg.norm((X - last_ten)) / train_norm # calculates the convergence metric as the relative change in the fixed tensor.
         last_ten = X.copy() # updates the tensor for convergence checking to the current fixed tensor.
         
@@ -360,4 +361,4 @@ def qktf(I, Omega, lengthscaleU: list, varianceU: list, tapering_range, d_matern
             print(f"Convergence reached at iteration {iter} with tolerance {tol:.6f}.")
             break
         
-    return X, M + np.mean(train_matrix)
+    return Xori, M + np.mean(train_matrix)
