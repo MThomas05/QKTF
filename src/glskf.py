@@ -48,7 +48,7 @@ def kronecker_mvm(Kr, vec, shape):
         x = fold(x_unfold, shape, d) 
 
 def build_khatri_rao(U, dims):
-    dims = [int(d) for d in dims] # sets D as the number of dimensions of the input tensor, which is equal to the length of the list of latent matrices.
+    dims = [int(d) for d in dims] 
     if len(dims) == 1:
         return U[dims[0]]
     else:
@@ -117,6 +117,7 @@ def GLSKF(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, var
     pos_miss = np.where(Omega == 0)
     num_obser = np.sum(Omega)
     mask_matrix = [unfold(Omega, d) for d in range(D)]
+    idx = np.sum(mask_matrix[D-1], axis = 0) > 0
     train_matrix = I * Omega
     train_matrix = train_matrix[train_matrix > 0]
     Isubmean = I - np.mean(train_matrix)
@@ -146,3 +147,48 @@ def GLSKF(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, var
     X[pos_miss] = T.sum() / num_obser
     U = [0.1 * np.random.randn(N[d], R) for d in range(D)]
     M = reconstruct_tensor(U, N)
+    Uvector = [U[d].ravel(order = 'F') for d in range(D)]
+    UTvector = [U[d].T.ravel(order = 'F') for d in range(D)]
+    Rtensor = np.zeros(N)
+    Rvector = Rtensor.ravel(order = 'F')
+    Rvector_temp = Rtensor.ravel(order = 'F')
+    X[pos_miss] = M[pos_miss] + Rtensor[pos_miss]
+
+    d_all = np.arange(0, D)
+    train_norm = np.linalg.norm(T)
+    last_ten = T.copy()
+    approxU = [None] * D
+    iter = 0
+    while True:
+        Gtensor = X - Rtensor
+        Gtensor_mask = Gtensor * Omega
+        for d in range(D):
+            dsub = np.delete(d_all, d)
+            dsub = numpy.array(dsub.get())
+            KrU = build_khatri_rao(U, dsub)
+            HG = KrU.T @ unfold(Gtensor_mask, d).T
+            UTvector[d], approxU[d] = cg_factorT(invKu[d], rho, KrU, mask_matrixT[d], HG, UTvector[d], 100)
+            U[d] = (UTvector[d].reshape(R, N[d], order = 'F')).T
+        M = reconstruct_tensor(U, N)
+        X[pos_miss] = M[pos_miss] + Rtensor[pos_miss]
+        if iter >= K0:
+            Ltensor = X - M
+            Ltensor_mask = Ltensor * Omega
+            Rvector_temp[pos_obs[0]], approxE = cg_local(gamma, Kr, pos_obs[0], Ltensor_mask, Rvector_temp[pos_obs[0]], 100)
+            Rvector = kronecker_mvm(Kr, Rvector_temp, N)
+            Rtensor = Rvector.reshape(N, order = 'F')
+            Rtensor_unfold = unfold(Rtensor, D-1)
+            Rtensor_unfold_obs = Rtensor_unfold[:, idx]
+            Kr[D-1] = np.cov(Rtensor_unfold_obs)
+        else:
+            Rtensor = np.zeros_like(Rtensor)
+        X[pos_miss] = M[pos_miss] + Rtensor[pos_miss]
+        Xori = X + np.mean(train_matrix)
+        
+        iter += 1
+        print(f"Epoch = {iter}")
+        tol = np.linalg.norm((X - last_ten)) / train_norm
+        last_ten = X.copy()
+        if (tol < epsilon) or (iter >= maxiter):
+            break
+    return Xori, Rtensor + np.mean(train_matrix), M + np.mean(train_matrix)
