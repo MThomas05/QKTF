@@ -177,6 +177,8 @@ def global_admm(Qu, KrU, mask_matrixT, mask_matrix, YR_tilde, priorvalue, z, the
     KrU_T = KrU.T # computes the transpose of the Khatri-Rao product of the latent matrices.
     print(f"x0: {x0}")
 
+    # ========== ADMM iterations ==========
+
     for j in range(max_iter):
         z_prev = z.copy() # stores the previous value of the auxiliary variable for convergence checking.
         bmat = sigma * (YR_tilde - z) - theta # computes inside the bracket of 'b' - used in the Conjugate Gradient method.
@@ -216,7 +218,7 @@ def global_admm(Qu, KrU, mask_matrixT, mask_matrix, YR_tilde, priorvalue, z, the
             print(f"Convergence reached at iteration {j+1}.")
             break
 
-    return u, z, theta, info
+    return u, z, theta
 
 def kronecker_mvm(Kr, vec, shape):
     """
@@ -237,7 +239,7 @@ def kronecker_mvm(Kr, vec, shape):
         x_unfold = unfold(x, d) # mode-d unfolding.
         x_unfold = Kr[d] @ x_unfold # matrix multiplication.
         x = fold(x_unfold, shape, d) # folds back to tensor.
-    
+
     return x.ravel(order = 'F')
 
 def local_operator(vec, pos_obs, Kr, gamma, lambda_, N):
@@ -255,10 +257,71 @@ def local_operator(vec, pos_obs, Kr, gamma, lambda_, N):
     Returns:
         ndarray: linear operator used in the Conjugate Gradient method for the local ADMM optimisation steps of the QKTF algorithm. 
     """
-    x = np.zeros(N) # zero-pads to vector of length N.
+    x = np.zeros(int(np.prod(N))) # zero-pads to vector of length N.
     x[pos_obs] = vec # slices the vector to the length of osberved entires - |Omega|.
     Ap = kronecker_mvm(Kr, x, N) # constructs the covariance matrices via Kronecker MVM.
     return lambda_ * Ap[pos_obs] + gamma * vec
+
+def local_admm(lambda_, gamma, priorvalue, a, v, Kr, pos_obs, total_data, YR_tilde, max_iter, tau):
+    """
+    Local ADMM algorithm for updating the local tensor in the QKTF algorithm.
+
+    Args:
+        lambda_ (float): local ADMM penalty parameter.
+        gamma (float): covariance regularisation parameter.
+        priorvalue (ndarray): previous iteration of local tensor - used as a warm start.
+        a (ndarray): auxiliary variable.
+        v (ndarray): Lagrangian multiplier.
+        Kr (list): list of covariance matrices for local component.
+        pos_obs (ndarray): ndarray containing positions where data is not missing.
+        total_data (int): number of total data entries.
+
+    Returns:
+        r_obs (ndarray): updated local tensor after local ADMM algorithm of QKTF algorithm.
+        a_vec (ndarray): updated auxiliary variable after local ADMM algorithm of QKTF algorithm.
+        v_vec (ndarray): updated Lagrangian multiplier after local ADMM algorithm of QKTF algorithm.
+        info: CG convergence info.
+    """
+    N = numpy.array(YR_tilde.shape) # gets the shape of YR_tilde and set N to it.
+    n_obs = pos_obs[0].shape[0] # collects the number of observations.
+    Y_obs = (YR_tilde.ravel(order = 'F'))[pos_obs] # slices the fixed tensor to only observed entries.
+    a_obs = (a.ravel(order = 'F'))[pos_obs] # slices the auxiliary variable to only observed entries.
+    v_obs = (v.ravel(order = 'F'))[pos_obs] # slices the Lagrangian multiplier to only observed entries.
+    x0 = priorvalue.copy() # sets the initial guess for the ADMM algorithm as the previous iteration of the latent matrix.
+
+    # ========== ADMM iterations =========
+    for j in range(max_iter):
+        a_prev = a_obs.copy() # stores the previous auxiliary varaible used in convergence checks.
+        b = lambda_ * (Y_obs - a_obs - v_obs) # right hand side operator used in Conjugate Gradient method.
+
+        # r-update
+        def matvec(v): # performs y = Ax for the linear operator used in the Conjugate Gradient method.
+            return local_operator(v, pos_obs, Kr, gamma, lambda_, N) # returns the linear operator used in the Conjugate Gradient method.
+        
+        ar = linalg.LinearOperator((n_obs, n_obs), matvec=matvec, dtype=b.dtype) # constructs the Linear Operator.
+        w, info = linalg.cg(ar, b, x0=x0, atol=1e-4, maxiter=max_iter) # performs the Conjugate Gradient method.
+        w_full = np.zeros(N) # intialisation for zero-padding back to size N.
+        w_full[pos_obs] = w # zero-pads w back to size N.
+        r = kronecker_mvm(Kr, w_full, N) # calculates r.
+
+        # auxiliary variable update
+        zeta = Y_obs - v_obs - r[pos_obs] # calculates zeta = y - x - O_1*r.
+        alpha = n_obs * lambda_ # calcualtes the parameter for the Proximal operator.
+        a_obs = prox_map(zeta, alpha, tau) # Proximal operator used for the quantile function.
+
+        # Lagrangian multiplier update
+        v_obs = v_obs + lambda_ * (r[pos_obs] + a_obs - Y_obs) # update for Lagrangian multiplier.
+
+        # convergence criterion.
+        res_pri = r[pos_obs] + a_obs - Y_obs
+        res_dual = lambda_ * (a_obs - a_prev)
+        eps_pri = np.sqrt(n_obs) * 1e-4 + 1e-4 * np.maximum(np.maximum(np.linalg.norm(r[pos_obs]), np.linalg.norm(a_obs)), np.linalg.norm(Y_obs))
+        eps_dual = np.sqrt(total_data) * 1e-4 + 1e-4 * np.linalg.norm(v_obs)
+
+        if np.linalg.norm(res_pri) <= eps_pri and np.linalg.norm(res_dual) <= eps_dual:
+            break
+
+    return r, a_obs, v_obs
 
 def qktf(I, Omega, lengthscaleU: list, varianceU: list, tapering_range, d_maternU, R, psi, sigma, tau, max_iter, epsilon):
     """
@@ -306,7 +369,7 @@ def qktf(I, Omega, lengthscaleU: list, varianceU: list, tapering_range, d_matern
     mask_matrix = [unfold(Omega, d) for d in range(D)] # creates a list of D matrices, where each matrix is the mode-d unfolding of Omega.
     mask_matrixT = [mask_matrix[d].T for d in range(D)] # creates a list of D matrices, where each matrix is the transpose of the mode-d unfolding of Omega.
     mask_flat = [mask_matrix[d].ravel(order = 'F') for d in range(D)] # creates a list of D vectors, where each vector is the flattened version of the mode-d unfolding of Omega.
-    pos_obs = [np.where(mask_flat[d] == 1)[0] for d in range(D)] # creates a list of D arrays, containing arrays of observed entries.
+    pos_obs = [np.where(mask_flat[d] == 1) for d in range(D)] # creates a list of D arrays, containing arrays of observed entries.
 
     # Data centering
     train_matrix = I * Omega # creates a mask of the tensor - setting indices to zero where there is data missing.
@@ -341,6 +404,10 @@ def qktf(I, Omega, lengthscaleU: list, varianceU: list, tapering_range, d_matern
     Uvector = [U[d].ravel(order = 'F') for d in range(D)] # creates a list of D vectors, where each vector is the flattened version of the corresponding latent matrix.
     UTvector = [U[d].T.ravel(order = 'F') for d in range(D)] # creates a list of D vectors, where each vector is the flattened version of the transpose of the corresponding latent matrix.
     rtensor = np.zeros(N) # initialises the local tensor with the same shape as the input data, filled with zeros.
+    a = np.zeros(N) # intialises the auxiliary variable used in the local ADMM algorithm.
+    v = np.zeros(N) # initialises the Lagrangian multiplier in the local ADMM algorithm.
+    rvector = rtensor.ravel(order = 'F') # vectorised local tensor.
+    rvector_temp = rtensor.ravel(order = 'F') # vectorised local tensor used in local ADMM algorithm.
 
     d_all = np.arange(D) # creates a vector of integers from 0 to D-1 - used for indexing.
 
