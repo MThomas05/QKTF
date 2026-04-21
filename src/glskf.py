@@ -46,6 +46,8 @@ def kronecker_mvm(Kr, vec, shape):
         x_unfold = unfold(x, d) 
         x_unfold = Kr[d] @ x_unfold 
         x = fold(x_unfold, shape, d) 
+    
+    return x.ravel(order = 'F')
 
 def build_khatri_rao(U, dims):
     dims = [int(d) for d in dims] 
@@ -90,13 +92,13 @@ def cg_factorT(Qu, rho, KrU, mask_matrixT, YR_tilde, priorvalue, max_iter):
     return x, info
 
 def Ap_operatorL(vec, pos_obs, Kr, gamma, N):
-    x = np.zeros(N)
+    x = np.zeros(int(numpy.prod(N)))
     x[pos_obs] = vec
     Ap1 = kronecker_mvm(Kr, x, N)
     return Ap1[pos_obs] + gamma * vec
 
 def cg_local(gamma, Kr, pos_obs, YR_tilde, priorvalue, max_iter):
-    N = YR_tilde.shape
+    N = numpy.array(YR_tilde.shape)
     n_obs = pos_obs[0].shape[0]
     b = (YR_tilde.ravel(order = 'F'))[pos_obs]
     def matvec(v):
@@ -137,7 +139,7 @@ def GLSKF(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, var
         invKu[d] = np.linalg.inv(Ku[d])
 
         hyper_Kr[d] = [np.log(lengthscaleR[d]), np.log(varianceR[d]), np.log(tapering_range)]
-        TaperM = bohman(hyper_Kr[d][2], x)
+        TaperM = bohman([hyper_Kr[d][2]], x)
         Kr[d] = csr_matrix(cov_matern(d_MaternR, hyper_Kr[d][:2], x) * TaperM)
 
     invKu[D-1] = np.eye(N[D-1])
@@ -190,5 +192,7 @@ def GLSKF(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, var
         tol = np.linalg.norm((X - last_ten)) / train_norm
         last_ten = X.copy()
         if (tol < epsilon) or (iter >= maxiter):
+            print(f"tol: {tol}")
+            print(f"epsilon: {epsilon}")
             break
     return Xori, Rtensor + np.mean(train_matrix), M + np.mean(train_matrix)

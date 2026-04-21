@@ -20,15 +20,21 @@ def create_missing_mask(tensor_shape, missing_fraction, device):
     return mask
 
 params = {
-    'lengthscaleU': [2, 5, 5],
+    'lengthscaleU': [10, 10, 10],
+    'lengthscaleR': [4, 4, 4],
     'varianceU': [1, 1, 1],
+    'varianceR': [1, 1, 1],
     'tapering_range': 5,
-    'd_maternU': 3,
+    'd_MaternU': 3,
+    'd_MaternR': 3,
     'R': 3,
     'psi': 0.001,
-    'sigma': 0.01,
+    'sigma': 0.001,
+    'gamma': 0.001,
+    'lambda_': 0.001,
     'tau': 0.5,
-    'max_iter': 50,
+    'max_iter': 100,
+    'K0': 50,
     'epsilon': 1e-4
 }
 
@@ -44,7 +50,9 @@ if __name__ == "__main__":
     Omega_cp = np.array(Omega)
     num_obs = int(np.sum(Omega_cp))
 
-    X, M_component = qktf.qktf(I, Omega_cp, **params)
+    X, Rtensor, M = qktf.qktf(I, Omega_cp, **params)
 
+print(f"Original tensor: {tensor}")
 print(f" X: {X}")
-print(f"M: {M_component}")
+print(f"Rtensor: {Rtensor}")
+print(f"M: {M}")
