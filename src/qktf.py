@@ -440,8 +440,6 @@ def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, vari
             U[d] = (UTvector[d].reshape(R, N[d], order = 'F')).T # reshapes the latent matrix back to its original shape.
         
         M = reconstruct_tensor(U, N) # reconstructs the global component of the tensor from the CP decomposition of the latent matrices.
-        print(f"M min: {np.min(M):.4f}, max: {np.max(M):.4f}")
-        print(f"M mean: {np.mean(M):.4f}, std: {np.std(M):.4f}")
         X[pos_miss] = M[pos_miss] + Rtensor[pos_miss] # updates the missing entries of the fixed tensor as the sum of the global component and the local tensor.
         
         if iter >= K0: # checks if number of iterations is above K0 to start local iterations.
@@ -450,8 +448,6 @@ def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, vari
             # Actual Locall ADMM optimisation call.
             Rvector, a, v = local_admm(lambda_, gamma, Rvector[pos_obs[0]], a, v, Kr, pos_obs[0], total_data, Ltensor_mask, 100, tau)
             Rtensor = Rvector.reshape(N, order = 'F') # reshapes the Rvector back to tensor size.
-            print(f"Rtensor min: {np.min(Rtensor):.4f}, max: {np.max(Rtensor):.4f}")
-            print(f"Rtensor mean: {np.mean(Rtensor):.4f}, std: {np.std(Rtensor):.4f}")
             Rtensor_unfold = unfold(Rtensor, D-1) # unfolds along the last dimension - used in covariance iteration.
             Rtensor_unfold_obs = Rtensor_unfold[:, idx] # ensures only calculating where there's observed entries in columns.
             Kr[D-1] = np.cov(Rtensor_unfold_obs) # calculates the new covariance in the last dimension.
@@ -463,13 +459,16 @@ def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, vari
 
         # Convergence checks.
         iter += 1 # increments the iteration counter.
-        print(f"Epoch: {iter}")
         tol = np.linalg.norm((X - last_ten)) / train_norm # calculates the convergence metric as the relative change in the fixed tensor.
         last_ten = X.copy() # updates the tensor for convergence checking to the current fixed tensor.
+
+        pbar.update(1)
+        pbar.set_postfix({'tol': f'{tol:.2e}', 'epoch': iter})
         
         if (tol < epsilon) or (iter >= max_iter):
             print(f"tol: {tol}")
             print(f"epsilon: {epsilon}")
+            pbar.close()
             break
         
     return Xori, Rtensor, M + np.mean(train_matrix)

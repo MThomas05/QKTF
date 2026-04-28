@@ -2,6 +2,7 @@ import glskf
 import numpy
 import torch
 import cupy as np
+import pandas as pd
 from scipy.ndimage import gaussian_filter1d, gaussian_filter
 
 def gen_synthetic_tensor(shape, rank, missing_fraction, target_local_std, df, seed, device):
@@ -50,7 +51,7 @@ def gen_synthetic_tensor(shape, rank, missing_fraction, target_local_std, df, se
     # ========== Local structure ==========
     R_true = gaussian_filter(numpy.random.randn(*shape), sigma=2) # short lengthscale vs sigma for global.
     R_true = R_true / R_true.std() * target_local_std 
-    R_true = torch.tensor(R_true, dtype=torch.flaot32, device=device)
+    R_true = torch.tensor(R_true, dtype=torch.float32, device=device)
 
     # ========== Heavy tails ==========
     noise = torch.distributions.StudentT(df=df, loc=0, scale=1) # generates tensor with Student-T distribution.
@@ -86,21 +87,12 @@ def compute_diagnostics(tensor, Omega, X, M_true, R_true, M_pred, R_pred):
     # ========== Reconstruction metrics ==========
     metrics = {}
 
-    # Observed tensor.
-    error_obs = tensor[obs_mask] - X[obs_mask]
-    metrics['RMSE_observed'] = np.sqrt(np.mean(error_obs**2))
-    metrics['Bias_observed'] = np.mean(error_obs)
-    metrics['Variance_observed'] = np.var(error_obs)
-    metrics['Std_observed'] = np.std(error_obs)
-    metrics['RelError_observed'] = np.linalg.norm(error_obs) / np.linalg.norm(tensor[obs_mask])
-
     # Full tensor.
     error_full = tensor - X
     metrics['RMSE_full'] = np.sqrt(np.mean(error_full**2))
     metrics['Bias_full'] = np.mean(error_full)
     metrics['Variance_full'] = np.var(error_full)
     metrics['Std_full'] = np.std(error_full)
-    metrics['RelError_full'] = np.linalg.norm(error_full) / np.linalg.norm(tensor)
     
     # ========== Component-wise metrics =========
     # Global component
@@ -118,31 +110,50 @@ def compute_diagnostics(tensor, Omega, X, M_true, R_true, M_pred, R_pred):
     metrics['R_Std'] = np.std(R_error)
 
     return metrics
+
+def print_diagnostics(metrics):
+    sections = {
+        'Full': ['RMSE_full', 'Bias_full', 'Variance_full', 'Std_full'],
+        'Global M': ['M_RMSE', 'M_Bias', 'M_Variance', 'M_Std'],
+        'Local R': ['R_RMSE', 'R_Bias', 'R_Variance', 'R_Std']
+    }
+    rows = []
+    for section, keys in sections.items():
+        for k in keys:
+            label = k.split('_', 1)[1] if '_' in k else k
+            rows.append({'Section': section, 'Metric': label,
+                         'Value': float(numpy.array(metrics[k].get()).ravel()[0])})
+            
+    df = (pd.DataFrame(rows)
+          .set_index(['Section', 'Metric']))
+    
+    print(df.to_string(float_format='{:.6f}'.format))
  
 params = {
-    'lengthscaleU': [10, 10, 10], # controls smoothness of M component (larger = smoother).
-    'lengthscaleR': [4, 4, 4], # controls smoothness of R.
-    'varianceU': [1, 1, 1], # variance scaling for U (typically 1, normalised).
-    'varianceR': [1, 1, 1], # variance scaling for R.
+    'lengthscaleU': [10, 10, 10, 10], # controls smoothness of M component (larger = smoother).
+    'lengthscaleR': [4, 4, 4, 4], # controls smoothness of R.
+    'varianceU': [1, 1, 1, 1], # variance scaling for U (typically 1, normalised).
+    'varianceR': [1, 1, 1, 1], # variance scaling for R.
     'tapering_range': 5, # how far local correlations extend (should be larger than lengthscaleR).
     'd_MaternU': 3, # Matern kernel smoothness (1 = rough, 3 = smooth, 5 = very smooth).
     'd_MaternR': 3, # Matern kernel smoothness for local component.
     'R': 3, # CP rank.
-    'rho': 0.001, # global covariance parameter.
-    'gamma': 0.001, # local covariance parameter.
+    'rho': 10, # global covariance parameter.
+    'gamma': 5, # local covariance parameter.
     'maxiter': 200, # maximum number of iterations.
     'K0': 50, # how many global iterations before local iterations.
     'epsilon': 1e-4 # tolerance.
 }
 
 if __name__ == "__main__":
-    seed = 123
+    seed = 42
     device = 'cuda'
-    tensor_shape = (150, 150, 100)
+    tensor_shape = (50, 50, 100, 100)
+    target_local_std = 2.0
     df = 3
-    rank = 3
+    rank = 4
     missing_fraction = 0.2
-    I, Omega, M_true, R_true, noise = gen_synthetic_tensor(tensor_shape, rank, missing_fraction, df, seed, device)
+    I, Omega, M_true, R_true, noise = gen_synthetic_tensor(tensor_shape, rank, missing_fraction, target_local_std, df, seed, device)
     I = np.array(I)
     Omega = np.array(Omega)
     X, Rtensor, M = glskf.GLSKF(I, Omega, **params)
@@ -154,5 +165,5 @@ print(f" X: {X}")
 print(f"Rtensor: {Rtensor}")
 print(f"M: {M}")
 
-metrics = compute_diagnostics(I, Omega, X, M_true, R_true, M, Rtensor, Omega)
-print(metrics)
+metrics = compute_diagnostics(I, Omega, X, M_true, R_true, M, Rtensor)
+print_diagnostics(metrics)
