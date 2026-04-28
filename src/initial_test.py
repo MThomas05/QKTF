@@ -4,7 +4,7 @@ import torch
 import cupy as np
 from scipy.ndimage import gaussian_filter1d, gaussian_filter
 
-def gen_synthetic_tensor(shape, rank, missing_fraction, df, seed, device):
+def gen_synthetic_tensor(shape, rank, missing_fraction, target_local_std, df, seed, device):
     """
     Simple synthetic tensor generator with:
         Global structure: smooth low-rank structure.
@@ -43,15 +43,14 @@ def gen_synthetic_tensor(shape, rank, missing_fraction, df, seed, device):
             component = component[..., None] # add new axis at end - broadcasts to next dim. '...' means all preceding dimensions.
             component = component * factors[d] # outer product with next factor.
 
-        M_true += torch.tensor(component, device=device) # add this rank component to the true M.
+        M_true += torch.tensor(component, dtype=torch.float32, device=device) # add this rank component to the true M.
 
     M_true = M_true / M_true.std() * 5 + 50 # normalise M to have a reasonable scale.
 
     # ========== Local structure ==========
-    R_true = numpy.random.randn(*shape) * 2 # pure white noise.
-    for d in range(D):
-        R_true = gaussian_filter(R_true, sigma=2) # short lengthscale vs sigma for global.
-    R_true = torch.tensor(R_true, device=device)
+    R_true = gaussian_filter(numpy.random.randn(*shape), sigma=2) # short lengthscale vs sigma for global.
+    R_true = R_true / R_true.std() * target_local_std 
+    R_true = torch.tensor(R_true, dtype=torch.flaot32, device=device)
 
     # ========== Heavy tails ==========
     noise = torch.distributions.StudentT(df=df, loc=0, scale=1) # generates tensor with Student-T distribution.
@@ -65,7 +64,7 @@ def gen_synthetic_tensor(shape, rank, missing_fraction, df, seed, device):
 
     return tensor, Omega, M_true, R_true, dist
 
-def compute_diagnostics(tensor, X, M_true, R_true, M_pred, R_pred):
+def compute_diagnostics(tensor, Omega, X, M_true, R_true, M_pred, R_pred):
     """
     Compute comprehensive diagnostics for tensor completion.
 
@@ -97,23 +96,23 @@ def compute_diagnostics(tensor, X, M_true, R_true, M_pred, R_pred):
 
     # Full tensor.
     error_full = tensor - X
-    metrics['RMSE_full'] = np.sqrt(error_full**2)
+    metrics['RMSE_full'] = np.sqrt(np.mean(error_full**2))
     metrics['Bias_full'] = np.mean(error_full)
     metrics['Variance_full'] = np.var(error_full)
     metrics['Std_full'] = np.std(error_full)
-    metrics['RelError_observed'] = np.linalg.norm(error_full) / np.linalg.norm(tensor)
+    metrics['RelError_full'] = np.linalg.norm(error_full) / np.linalg.norm(tensor)
     
     # ========== Component-wise metrics =========
     # Global component
     M_error = M_true - M_pred
-    metrics['M_RMSE'] = np.sqrt(M_error**2)
+    metrics['M_RMSE'] = np.sqrt(np.mean(M_error**2))
     metrics['M_Bias'] = np.mean(M_error)
     metrics['M_Variance'] = np.var(M_error)
     metrics['M_Std'] = np.std(M_error)
 
     # Local component
     R_error = R_true - R_pred
-    metrics['R_RMSE'] = np.sqrt(R_error**2)
+    metrics['R_RMSE'] = np.sqrt(np.mean(R_error**2))
     metrics['R_Bias'] = np.mean(R_error)
     metrics['R_Variance'] = np.var(R_error)
     metrics['R_Std'] = np.std(R_error)
@@ -143,6 +142,7 @@ if __name__ == "__main__":
     seed = 42
     device = 'cuda'
     tensor_shape = (50, 50, 100, 100)
+    target_local_std = 2.0
     df = 3
     rank = 4
     missing_fraction = 0.2

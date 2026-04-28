@@ -214,7 +214,6 @@ def global_admm(Qu, KrU, mask_matrixT, mask_matrix, YR_tilde, priorvalue, z, the
         eps_dual = np.sqrt(total_data) * 1e-4 + 1e-4 * np.linalg.norm(KrU_T @ theta) # computes the dual feasibility tolerance.
 
         if np.linalg.norm(res_pri) <= eps_pri and np.linalg.norm(res_dual) <= eps_dual: # checks for convergence of the ADMM algorithm.
-            print(f"Convergence reached at iteration {j+1}.")
             break
 
     return u, z, theta
@@ -473,4 +472,4 @@ def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, vari
             print(f"epsilon: {epsilon}")
             break
         
-    return Xori, Rtensor + np.mean(train_matrix), M + np.mean(train_matrix)
+    return Xori, Rtensor, M + np.mean(train_matrix)

@@ -195,4 +195,4 @@ def GLSKF(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, var
             print(f"tol: {tol}")
             print(f"epsilon: {epsilon}")
             break
-    return Xori, Rtensor + np.mean(train_matrix), M + np.mean(train_matrix)
+    return Xori, Rtensor, M + np.mean(train_matrix)
