@@ -43,16 +43,19 @@ def gen_synthetic_tensor(shape, rank, missing_fraction, df, seed, device):
             component = component[..., None] # add new axis at end - broadcasts to next dim. '...' means all preceding dimensions.
             component = component * factors[d] # outer product with next factor.
 
-    M_true += torch.tensor(component, device=device) # add this rank component to the true M.
+        M_true += torch.tensor(component, device=device) # add this rank component to the true M.
 
     M_true = M_true / M_true.std() * 5 + 50 # normalise M to have a reasonable scale.
 
     # ========== Local structure ==========
-    R_true = torch.randn(shape, device=device) * 2 # pure white noise.
+    R_true = numpy.random.randn(*shape) * 2 # pure white noise.
+    for d in range(D):
+        R_true = gaussian_filter(R_true, sigma=2) # short lengthscale vs sigma for global.
+    R_true = torch.tensor(R_true, device=device)
 
     # ========== Heavy tails ==========
     noise = torch.distributions.StudentT(df=df, loc=0, scale=1) # generates tensor with Student-T distribution.
-    dist = noise.sample(shape).to('cuda') # reshapes data to input tensor shape and sets to GPU performance.
+    dist = noise.sample(shape).to(device) # reshapes data to input tensor shape and sets to GPU performance.
 
     # ========== Tensor ==========
     tensor = M_true + R_true + dist # actual observed data.
@@ -60,7 +63,7 @@ def gen_synthetic_tensor(shape, rank, missing_fraction, df, seed, device):
     # ========== Mask creation ==========
     Omega = torch.rand(shape, device=device) >= missing_fraction # missing entries where random values are less than missing_fraction.
 
-    return tensor, Omega, M_true, R_true, noise
+    return tensor, Omega, M_true, R_true, dist
 
 def compute_diagnostics(tensor, X, M_true, R_true, M_pred, R_pred):
     """
@@ -77,15 +80,8 @@ def compute_diagnostics(tensor, X, M_true, R_true, M_pred, R_pred):
     Returns:
     dict: Dictionary of diagnostic metrics.
     """
-    # Convert everything to NumPy from CuPy.
-    tensor = np.asnumpy(tensor)
-    X = np.asnumpy(X)
-    M_true = np.asnumpy(M_true)
-    R_true = np.asnumpy(R_true)
-    M_pred = np.asnumpy(M_pred)
-    R_pred = np.asnumpy(R_pred)
 
-    obs_mask = Omega.type(bool)
+    obs_mask = Omega.astype(bool)
     miss_mask = ~obs_mask
     
     # ========== Reconstruction metrics ==========
@@ -114,7 +110,6 @@ def compute_diagnostics(tensor, X, M_true, R_true, M_pred, R_pred):
     metrics['M_Bias'] = np.mean(M_error)
     metrics['M_Variance'] = np.var(M_error)
     metrics['M_Std'] = np.std(M_error)
-    metrics['M_RelError'] = np.linalg.norm(M_error) / np.linalg.norm(M_true)
 
     # Local component
     R_error = R_true - R_pred
@@ -122,35 +117,34 @@ def compute_diagnostics(tensor, X, M_true, R_true, M_pred, R_pred):
     metrics['R_Bias'] = np.mean(R_error)
     metrics['R_Variance'] = np.var(R_error)
     metrics['R_Std'] = np.std(R_error)
-    metrics['R_RelError'] = np.linalg.norm(R_error) / np.linalg.norm(R_true)
 
-    print(metrics)
+    return metrics
  
 params = {
-    'lengthscaleU': [10, 10, 10], # controls smoothness of M component (larger = smoother).
-    'lengthscaleR': [4, 4, 4], # controls smoothness of R.
-    'varianceU': [1, 1, 1], # variance scaling for U (typically 1, normalised).
-    'varianceR': [1, 1, 1], # variance scaling for R.
+    'lengthscaleU': [15, 15, 15, 15], # controls smoothness of M component (larger = smoother).
+    'lengthscaleR': [4, 4, 4, 4], # controls smoothness of R.
+    'varianceU': [1, 1, 1, 1], # variance scaling for U (typically 1, normalised).
+    'varianceR': [1, 1, 1, 1], # variance scaling for R.
     'tapering_range': 5, # how far local correlations extend (should be larger than lengthscaleR).
     'd_MaternU': 3, # Matern kernel smoothness (1 = rough, 3 = smooth, 5 = very smooth).
     'd_MaternR': 3, # Matern kernel smoothness for local component.
-    'R': 3, # CP rank.
+    'R': 4, # CP rank.
     'psi': 0.001, # global covariance parameter.
-    'sigma': 0.001, # global ADMM penalty.
-    'gamma': 0.001, # local covariance parameter.
-    'lambda_': 0.001, # local ADMM penalty.
+    'sigma': 0.05, # global ADMM penalty.
+    'gamma': 0.005, # local covariance parameter.
+    'lambda_': 0.025, # local ADMM penalty.
     'tau': 0.5, # quantile parameter.
     'max_iter': 200, # maximum number of iterations.
-    'K0': 50, # how many global iterations before local iterations.
+    'K0': 70, # how many global iterations before local iterations.
     'epsilon': 1e-4 # tolerance.
 }
 
 if __name__ == "__main__":
     seed = 42
     device = 'cuda'
-    tensor_shape = (150, 150, 100)
+    tensor_shape = (50, 50, 100, 100)
     df = 3
-    rank = 3
+    rank = 4
     missing_fraction = 0.2
     I, Omega, M_true, R_true, noise = gen_synthetic_tensor(tensor_shape, rank, missing_fraction, df, seed, device)
     I = np.array(I)
@@ -164,4 +158,5 @@ print(f" X: {X}")
 print(f"Rtensor: {Rtensor}")
 print(f"M: {M}")
 
-compute_diagnostics(I, X, M_true, R_true, M, Rtensor)
+metrics = compute_diagnostics(I, X, M_true, R_true, M, Rtensor)
+print(metrics)
