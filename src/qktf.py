@@ -321,7 +321,7 @@ def local_admm(lambda_, gamma, priorvalue, a, v, Kr, pos_obs, total_data, YR_til
 
     return r, a_obs, v_obs
 
-def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, varianceR: list, tapering_range, d_MaternU, d_MaternR, R, psi, sigma, gamma, lambda_, tau, max_iter, K0, epsilon):
+def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, varianceR: list, tapering_range, d_MaternU, d_MaternR, R, psi, sigma, gamma, lambda_, tau, max_iter, K0, epsilon, seed):
     """
     Quantized Kernelized Tensor Factorization (QKTF) algorithm for tensor completion.  
 
@@ -343,6 +343,7 @@ def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, vari
         M_component (ndarray): reconstructed global component of the tensor.
     """
     # ========== Setup ==========
+    np.random.seed(seed) # sets the random seed for reproducibility of results.
     N = I.shape # sets N as the shape of the input tensor.
     N = numpy.array(N) # converts N to a numpy array - created using NumPy and not CuPy as it's used for integer indexing. CuPy arrays cannot be used for integer indexing.
     
@@ -445,25 +446,33 @@ def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, vari
         if iter >= K0: # checks if number of iterations is above K0 to start local iterations.
             Ltensor = X - M # intialises the local tensor as the residual.
             Ltensor_mask = Ltensor * Omega # masks the local tensor.
-            # Actual Locall ADMM optimisation call.
+
+            # Actual Local ADMM optimisation call.
             Rvector, a, v = local_admm(lambda_, gamma, Rvector[pos_obs[0]], a, v, Kr, pos_obs[0], total_data, Ltensor_mask, 100, tau)
             Rtensor = Rvector.reshape(N, order = 'F') # reshapes the Rvector back to tensor size.
-            Rtensor_unfold = unfold(Rtensor, D-1) # unfolds along the last dimension - used in covariance iteration.
-            Rtensor_unfold_obs = Rtensor_unfold[:, idx] # ensures only calculating where there's observed entries in columns.
-            Kr[D-1] = np.cov(Rtensor_unfold_obs) # calculates the new covariance in the last dimension.
+            r_std = float(np.std(Rtensor))
+            if r_std > 0.1:
+                Rtensor_unfold = unfold(Rtensor, D-1) # unfolds along the last dimension - used in covariance iteration.
+                Rtensor_unfold_obs = Rtensor_unfold[:, idx] # ensures only calculating where there's observed entries in columns.
+                Kr[D-1] = np.cov(Rtensor_unfold_obs) # calculates the new covariance in the last dimension.
+            else:
+                Kr[D-1] = np.eye(N[D-1]) # if the local tensor is very small, set the covariance to identity to avoid numerical issues.
         else:
             Rtensor = np.zeros_like(Rtensor) # if local iteration isn't run, just set the local tensor to zero.
 
         X[pos_miss] = M[pos_miss] + Rtensor[pos_miss] # updates the missing entries of the fixed tensor as the sum of the global component and the local tensor.
         Xori = X + np.mean(train_matrix) # adds the mean back into X.
 
-        # Convergence checks.
+        # Convergence checks
         iter += 1 # increments the iteration counter.
         tol = np.linalg.norm((X - last_ten)) / train_norm # calculates the convergence metric as the relative change in the fixed tensor.
         last_ten = X.copy() # updates the tensor for convergence checking to the current fixed tensor.
 
         pbar.update(1)
-        pbar.set_postfix({'tol': f'{tol:.2e}', 'epoch': iter})
+        
+        if np.isnan(tol) or np.isinf(tol): # checks for numerical issues in convergence metric.
+            pbar.set_postfix({'tol': f'{tol:.2e}', 'epoch': iter})
+            break
         
         if (tol < epsilon) or (iter >= max_iter):
             print(f"tol: {tol}")

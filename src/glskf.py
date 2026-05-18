@@ -4,6 +4,7 @@ import cupyx.scipy.sparse.linalg as linalg
 from cupyx.scipy.linalg import khatri_rao
 from cupyx.scipy.sparse import eye, csr_matrix
 import numpy
+from tqdm import tqdm
 
 def cov_matern(d, loghyper, x):
     ell = np.exp(loghyper[0])
@@ -160,6 +161,7 @@ def GLSKF(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, var
     train_norm = np.linalg.norm(T)
     last_ten = T.copy()
     approxU = [None] * D
+    pbar = tqdm(total=maxiter, desc="GLSKF Iterations") # creates a progress bar for the ADMM iterations.
     iter = 0
     while True:
         Gtensor = X - Rtensor
@@ -188,11 +190,14 @@ def GLSKF(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, var
         Xori = X + np.mean(train_matrix)
         
         iter += 1
-        print(f"Epoch = {iter}")
         tol = np.linalg.norm((X - last_ten)) / train_norm
         last_ten = X.copy()
+
+        pbar.update(1)
+
         if (tol < epsilon) or (iter >= maxiter):
             print(f"tol: {tol}")
             print(f"epsilon: {epsilon}")
+            pbar.close()
             break
     return Xori, Rtensor, M + np.mean(train_matrix)

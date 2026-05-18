@@ -4,7 +4,7 @@ import torch
 import cupy as np
 import pandas as pd
 import itertools
-from scipy.ndimage import gaussian_filter1d, gaussian_filter
+from scipy.ndimage import gaussian_filter1d, gaussian_filter, median_filter
 
 def gen_synthetic_tensor(shape, rank, missing_fraction, target_local_std, df, seed, device):
     """
@@ -50,8 +50,9 @@ def gen_synthetic_tensor(shape, rank, missing_fraction, target_local_std, df, se
     M_true = M_true / M_true.std() * 5 + 50 # normalise M to have a reasonable scale.
 
     # ========== Local structure ==========
-    R_true = gaussian_filter(numpy.random.randn(*shape), sigma=2) # short lengthscale vs sigma for global.
-    R_true = R_true / R_true.std() * target_local_std 
+    R_raw = numpy.random.standard_t(df=df, size=shape) # short lengthscale vs sigma for global.
+    R_true = median_filter(R_raw, size=3)
+    R_true = R_true / numpy.std(R_true) * target_local_std 
     R_true = torch.tensor(R_true, dtype=torch.float32, device=device)
 
     # ========== Heavy tails ==========
@@ -94,6 +95,7 @@ def compute_diagnostics(tensor, Omega, X, M_true, R_true, M_pred, R_pred):
     metrics['Bias_full'] = np.mean(error_full)
     metrics['Variance_full'] = np.var(error_full)
     metrics['Std_full'] = np.std(error_full)
+    metrics['Full_recovery'] = 1 - np.linalg.norm(error_full) / np.linalg.norm(tensor) # measures how well the full tensor is recovered.
     
     # ========== Component-wise metrics =========
     # Global component
@@ -102,6 +104,7 @@ def compute_diagnostics(tensor, Omega, X, M_true, R_true, M_pred, R_pred):
     metrics['M_Bias'] = np.mean(M_error)
     metrics['M_Variance'] = np.var(M_error)
     metrics['M_Std'] = np.std(M_error)
+    metrics['M_recovery'] = 1 - np.linalg.norm(M_error) / np.linalg.norm(M_true) # measures how well M is recovered.
 
     # Local component
     R_error = R_true - R_pred
@@ -109,6 +112,7 @@ def compute_diagnostics(tensor, Omega, X, M_true, R_true, M_pred, R_pred):
     metrics['R_Bias'] = np.mean(R_error)
     metrics['R_Variance'] = np.var(R_error)
     metrics['R_Std'] = np.std(R_error)
+    metrics['R_recovery'] = 1 - np.linalg.norm(R_error) / np.linalg.norm(R_true) # measures how well R is recovered.
 
     return metrics
 
@@ -123,64 +127,76 @@ def print_diagnostics(metrics):
         for k in keys:
             label = k.split('_', 1)[-1] if '_' in k else k
             rows.append({'Section': section, 'Metric': label,
-                         'Value': float(numpy.array(metrics[k].get()).ravel()[0])})
+                         'Value': float(np.array(metrics[k].get()).ravel()[0])})
             
     df = (pd.DataFrame(rows)
           .set_index(['Section', 'Metric']))
     
     print(df.to_string(float_format='{:.6f}'.format))
 
-psi_values = [0.001, 0.002, 0.004, 0.006, 0.008]
-sigma_values = [0.01, 0.05, 0.1]
-gamma_values = [0.0001, 0.0005, 0.001, 0.005, 0.01]
-lambda_values = [0.0001, 0.0005, 0.001, 0.005, 0.01]
-
 results = []
 
-seed = 42
+seed = 3
 device = 'cuda'
-tensor_shape = (10, 10, 15, 15)
-target_local_std = 2.0
-df = 3
+tensor_shape = (25, 25, 30, 30)
+target_local_std = 5.0
+df = 2
 rank = 4
 missing_fraction = 0.2
 I, Omega, M_true, R_true, noise = gen_synthetic_tensor(tensor_shape, rank, missing_fraction, target_local_std, df, seed, device)
 I = np.array(I)
 Omega = np.array(Omega)
+M_true = np.array(M_true)
+R_true = np.array(R_true)
+
+n_obs = int(np.sum(Omega))
+lambda_base = target_local_std / n_obs
+
+psi_values = [0.002, 0.001]
+sigma_values = [0.01, 0.02]
+gamma_values = [5e-5, 1e-5, 5e-4, 1e-4, 5e-3, 1e-3, 5e-2, 1e-2, 5e-1, 1e-1, 1.0]
+lambda_values = [1e-5, 5e-5, 1e-4, 5e-4, 1e-3, 5e-3, 1e-2, 5e-2, 1e-1, 5e-1, 1.0]
+
+test_iter = 0
 
 for psi, sigma, gamma, lam in itertools.product(psi_values, sigma_values, gamma_values, lambda_values):
     params_test = {
-                   'lengthscaleU': [5, 5, 5, 5],
-                   'lengthscaleR': [2, 2, 2, 2],
+                   'lengthscaleU': [5, 5, 5, 5], # 10-20% of dimension size for global structure.
+                   'lengthscaleR': [2, 2, 2, 2], # 5-10% of dimension size for local structure.
                    'varianceU': [1, 1, 1, 1],
                    'varianceR': [1, 1, 1, 1],
-                   'tapering_range': 3,
+                   'tapering_range': 4, # At least x2 the local lengthscale to capture local structure.
                    'd_MaternU': 3,
                    'd_MaternR': 3,
                    'R': 3,
-                   'psi': psi, 
-                   'sigma': sigma, 
-                   'gamma': gamma,
-                   'lambda_': lam,
+                   'psi': psi, # Try 0.003, 0.004, 0.005
+                   'sigma': sigma, # Try 0.03, 0.04
+                   'gamma': gamma, # Try 0.0001, 0.0002
+                   'lambda_': lam, # Try 0.02, 0.03, 0.04, 0.05
                    'tau': 0.5,
-                   'max_iter': 15,
-                   'K0': 5,
-                   'epsilon': 1e-4}
+                   'max_iter': 50,
+                   'K0': 10,
+                   'epsilon': 1e-8,
+                   'seed': seed}
     X, Rtensor, M = qktf.qktf(I, Omega, **params_test)
 
-    m_std = float(numpy.std(M))
-    r_std = float(numpy.std(Rtensor))
+    m_std = float(np.std(M))
+    r_std = float(np.std(Rtensor))
 
     results.append({
         'psi': psi, 'sigma': sigma, 'gamma': gamma, 'lambda_': lam,
         'M_std': m_std, 'R_std': r_std
     })
 
-    print(f"psi={psi:.3f}, sigma={sigma:.3f}, gamma={gamma:.3f}, lambda_={psi:.3f}",
+    print(f"psi={psi:.6f}, sigma={sigma:.6f}, gamma={gamma:.6f}, lambda_={lam:.6f}",
           f"M_std={m_std}, R_std={r_std}")
     
+    test_iter += 1
     data = pd.DataFrame(results)
-    print(data[data['R_std'] > 0.1].sort_values('R_std', ascending=False).head(20))
+    data['score'] = (data['M_std'] - 5).abs() - (data['R_std'] - 5).abs()
+    mask = data['M_std'].between(3.5, 7.5) & data['R_std'].between(3.5, 7.5)
+    print(data.loc[mask].sort_values('score'))
+    print(f"iteration: {test_iter} out of 128")
 
 metrics = compute_diagnostics(I, Omega, X, M_true, R_true, M, Rtensor)
 print_diagnostics(metrics)

@@ -1,4 +1,4 @@
-import glskf
+import qktf
 import numpy
 import torch
 import cupy as np
@@ -55,7 +55,7 @@ def gen_synthetic_tensor(shape, rank, missing_fraction, target_local_std, df, se
     R_true = torch.tensor(R_true, dtype=torch.float32, device=device)
 
     # ========== Heavy tails ==========
-    noise = torch.distributions.StudentT(df=df, loc=0, scale=0.5) # generates tensor with Student-T distribution.
+    noise = torch.distributions.StudentT(df=df, loc=0, scale=1) # generates tensor with Student-T distribution.
     dist = noise.sample(shape).to(device) # reshapes data to input tensor shape and sets to GPU performance.
 
     # ========== Tensor ==========
@@ -94,7 +94,6 @@ def compute_diagnostics(tensor, Omega, X, M_true, R_true, M_pred, R_pred):
     metrics['Bias_full'] = np.mean(error_full)
     metrics['Variance_full'] = np.var(error_full)
     metrics['Std_full'] = np.std(error_full)
-    metrics['Full_recovery'] = 1 - np.linalg.norm(error_full) / np.linalg.norm(tensor) # measures how well the full tensor is recovered.
     
     # ========== Component-wise metrics =========
     # Global component
@@ -103,7 +102,6 @@ def compute_diagnostics(tensor, Omega, X, M_true, R_true, M_pred, R_pred):
     metrics['M_Bias'] = np.mean(M_error)
     metrics['M_Variance'] = np.var(M_error)
     metrics['M_Std'] = np.std(M_error)
-    metrics['M_recovery'] = 1 - np.linalg.norm(M_error) / np.linalg.norm(M_true) # measures how well M is recovered.
 
     # Local component
     R_error = R_true - R_pred
@@ -111,37 +109,19 @@ def compute_diagnostics(tensor, Omega, X, M_true, R_true, M_pred, R_pred):
     metrics['R_Bias'] = np.mean(R_error)
     metrics['R_Variance'] = np.var(R_error)
     metrics['R_Std'] = np.std(R_error)
-    metrics['R_recovery'] = 1 - np.linalg.norm(R_error) / np.linalg.norm(R_true) # measures how well R is recovered.
 
     return metrics
 
 def print_diagnostics(metrics):
     sections = {
-        'Full': ['RMSE_full', 'Bias_full', 'Variance_full', 'Std_full', 'Full_recovery'],
-        'Global M': ['M_RMSE', 'M_Bias', 'M_Variance', 'M_Std', 'M_recovery'],
-        'Local R': ['R_RMSE', 'R_Bias', 'R_Variance', 'R_Std', 'R_recovery']
+        'Full': ['RMSE_full', 'Bias_full', 'Variance_full', 'Std_full'],
+        'Global M': ['M_RMSE', 'M_Bias', 'M_Variance', 'M_Std'],
+        'Local R': ['R_RMSE', 'R_Bias', 'R_Variance', 'R_Std']
     }
     rows = []
     for section, keys in sections.items():
         for k in keys:
-            label_map = {
-                'RMSE_full': 'RMSE',
-                'Bias_full': 'Bias',
-                'Variance_full': 'Variance',
-                'Std_full': 'Std',
-                'Full_recovery': 'Recovery',
-                'M_RMSE': 'RMSE',
-                'M_Bias': 'Bias',
-                'M_Variance': 'Variance',
-                'M_Std': 'Std',
-                'M_recovery': 'Recovery',
-                'R_RMSE': 'RMSE',
-                'R_Bias': 'Bias',
-                'R_Variance': 'Variance',
-                'R_Std': 'Std',
-                'R_recovery': 'Recovery'
-            }
-            label = label_map.get(k, k)
+            label = k.split('_', 1)[-1] if '_' in k else k
             rows.append({'Section': section, 'Metric': label,
                          'Value': float(numpy.array(metrics[k].get()).ravel()[0])})
             
@@ -150,40 +130,36 @@ def print_diagnostics(metrics):
     
     print(df.to_string(float_format='{:.6f}'.format))
 
-
 seed = 1
 device = 'cuda'
-tensor_shape = (50, 50, 100, 100)
-target_local_std = 5.0
-df = 2
+tensor_shape = (25, 25, 50, 50)
+target_local_std = 2.0
+df = 3
 rank = 4
 missing_fraction = 0.2
 I, Omega, M_true, R_true, noise = gen_synthetic_tensor(tensor_shape, rank, missing_fraction, target_local_std, df, seed, device)
 I = np.array(I)
 Omega = np.array(Omega)
-M_true = np.array(M_true)
-R_true = np.array(R_true)
-
-test_iter = 0
-
 
 params_test = {
-            'lengthscaleU': [5, 5, 5, 5],
-            'lengthscaleR': [2, 2, 2, 2],
-            'varianceU': [1, 1, 1, 1],
-            'varianceR': [1, 1, 1, 1],
-            'tapering_range': 4,
-            'd_MaternU': 3,
-            'd_MaternR': 3,
-            'R': 3,
-            'rho': 10, # Try 10, 15, 20 - higher rho should encourage more global structure.
-            'gamma': 20, # Try 10, 20 - higher gamma should encourage more local structure.
-            'maxiter': 200,
-            'K0': 50,
-            'epsilon': 1e-8}
-X, Rtensor, M = glskf.GLSKF(I, Omega, **params_test)#
-m_std = float(np.std(M))
-r_std = float(np.std(Rtensor))
+                   'lengthscaleU': [10, 10, 20, 20],
+                   'lengthscaleR': [4, 4, 5, 5],
+                   'varianceU': [1, 1, 1, 1],
+                   'varianceR': [1, 1, 1, 1],
+                   'tapering_range': 5,
+                   'd_MaternU': 3,
+                   'd_MaternR': 3,
+                   'R': 3,
+                   'psi': 0.002, 
+                   'sigma': 0.01, 
+                   'gamma': 0.0001,
+                   'lambda_': 0.0005,
+                   'tau': 0.5,
+                   'max_iter': 50,
+                   'K0': 20,
+                   'epsilon': 1e-8}
+
+X, Rtensor, M = qktf.qktf(I, Omega, **params_test)
 
 metrics = compute_diagnostics(I, Omega, X, M_true, R_true, M, Rtensor)
 print_diagnostics(metrics)
