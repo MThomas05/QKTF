@@ -1,10 +1,16 @@
-import qktf
+import glskf
 import numpy
 import torch
 import cupy as np
 import pandas as pd
 import itertools
-from scipy.ndimage import gaussian_filter1d, gaussian_filter, median_filter
+from scipy.ndimage import gaussian_filter1d, gaussian_filter
+
+seed = 1
+numpy.random.seed(seed)
+torch.manual_seed(seed)
+torch.cuda.manual_seed(seed)
+np.random.seed(seed)
 
 def gen_synthetic_tensor(shape, rank, missing_fraction, target_local_std, df, seed, device):
     """
@@ -50,13 +56,12 @@ def gen_synthetic_tensor(shape, rank, missing_fraction, target_local_std, df, se
     M_true = M_true / M_true.std() * 5 + 50 # normalise M to have a reasonable scale.
 
     # ========== Local structure ==========
-    R_raw = numpy.random.standard_t(df=df, size=shape) # short lengthscale vs sigma for global.
-    R_true = median_filter(R_raw, size=3)
-    R_true = R_true / numpy.std(R_true) * target_local_std 
+    R_true = gaussian_filter(numpy.random.randn(*shape), sigma=2) # short lengthscale vs sigma for global.
+    R_true = R_true / R_true.std() * target_local_std 
     R_true = torch.tensor(R_true, dtype=torch.float32, device=device)
 
     # ========== Heavy tails ==========
-    noise = torch.distributions.StudentT(df=df, loc=0, scale=1) # generates tensor with Student-T distribution.
+    noise = torch.distributions.StudentT(df=df, loc=0.0, scale=1.0) # generates tensor with Student-T distribution.
     dist = noise.sample(shape).to(device) # reshapes data to input tensor shape and sets to GPU performance.
 
     # ========== Tensor ==========
@@ -118,85 +123,99 @@ def compute_diagnostics(tensor, Omega, X, M_true, R_true, M_pred, R_pred):
 
 def print_diagnostics(metrics):
     sections = {
-        'Full': ['RMSE_full', 'Bias_full', 'Variance_full', 'Std_full'],
-        'Global M': ['M_RMSE', 'M_Bias', 'M_Variance', 'M_Std'],
-        'Local R': ['R_RMSE', 'R_Bias', 'R_Variance', 'R_Std']
+        'Full': ['RMSE_full', 'Bias_full', 'Variance_full', 'Std_full', 'Full_recovery'],
+        'Global M': ['M_RMSE', 'M_Bias', 'M_Variance', 'M_Std', 'M_recovery'],
+        'Local R': ['R_RMSE', 'R_Bias', 'R_Variance', 'R_Std', 'R_recovery']
     }
     rows = []
     for section, keys in sections.items():
         for k in keys:
-            label = k.split('_', 1)[-1] if '_' in k else k
+            label_map = {
+                'RMSE_full': 'RMSE',
+                'Bias_full': 'Bias',
+                'Variance_full': 'Variance',
+                'Std_full': 'Std',
+                'Full_recovery': 'Recovery',
+                'M_RMSE': 'RMSE',
+                'M_Bias': 'Bias',
+                'M_Variance': 'Variance',
+                'M_Std': 'Std',
+                'M_recovery': 'Recovery',
+                'R_RMSE': 'RMSE',
+                'R_Bias': 'Bias',
+                'R_Variance': 'Variance',
+                'R_Std': 'Std',
+                'R_recovery': 'Recovery'
+            }
+            label = label_map.get(k, k)
             rows.append({'Section': section, 'Metric': label,
-                         'Value': float(np.array(metrics[k].get()).ravel()[0])})
+                         'Value': float(numpy.array(metrics[k].get()).ravel()[0])})
             
     df = (pd.DataFrame(rows)
           .set_index(['Section', 'Metric']))
     
     print(df.to_string(float_format='{:.6f}'.format))
 
-results = []
 
-seed = 3
 device = 'cuda'
-tensor_shape = (25, 25, 30, 30)
-target_local_std = 5.0
+tensor_shape = (2, 2, 5, 5)
+target_local_std = 2.0
 df = 2
-rank = 4
-missing_fraction = 0.2
+rank = 3
+missing_fraction = 0.9
 I, Omega, M_true, R_true, noise = gen_synthetic_tensor(tensor_shape, rank, missing_fraction, target_local_std, df, seed, device)
 I = np.array(I)
-Omega = np.array(Omega)
 M_true = np.array(M_true)
 R_true = np.array(R_true)
+signal = M_true + R_true
 
-n_obs = int(np.sum(Omega))
-lambda_base = target_local_std / n_obs
+Omega_all = np.array(Omega)
+train_mask = Omega_all & (np.random.rand(*tensor_shape) < 0.8) # 80% of observed entries used for training.
+test_mask = Omega_all & ~train_mask # remaining 20% of observed entries used for testing.
 
-psi_values = [0.002, 0.001]
-sigma_values = [0.01, 0.02]
-gamma_values = [5e-5, 1e-5, 5e-4, 1e-4, 5e-3, 1e-3, 5e-2, 1e-2, 5e-1, 1e-1, 1.0]
-lambda_values = [1e-5, 5e-5, 1e-4, 5e-4, 1e-3, 5e-3, 1e-2, 5e-2, 1e-1, 5e-1, 1.0]
+Omega = train_mask 
 
-test_iter = 0
+rho_values = [10]
+gamma_values = [20]
 
-for psi, sigma, gamma, lam in itertools.product(psi_values, sigma_values, gamma_values, lambda_values):
+iter = 0
+data = []
+
+for rho, gamma in itertools.product(rho_values, gamma_values):
     params_test = {
-                   'lengthscaleU': [5, 5, 5, 5], # 10-20% of dimension size for global structure.
-                   'lengthscaleR': [2, 2, 2, 2], # 5-10% of dimension size for local structure.
-                   'varianceU': [1, 1, 1, 1],
-                   'varianceR': [1, 1, 1, 1],
-                   'tapering_range': 4, # At least x2 the local lengthscale to capture local structure.
-                   'd_MaternU': 3,
-                   'd_MaternR': 3,
-                   'R': 3,
-                   'psi': psi, # Try 0.003, 0.004, 0.005
-                   'sigma': sigma, # Try 0.03, 0.04
-                   'gamma': gamma, # Try 0.0001, 0.0002
-                   'lambda_': lam, # Try 0.02, 0.03, 0.04, 0.05
-                   'tau': 0.5,
-                   'max_iter': 50,
-                   'K0': 10,
-                   'epsilon': 1e-8,
-                   'seed': seed}
-    X, Rtensor, M = qktf.qktf(I, Omega, **params_test)
+            'lengthscaleU': [3, 3, 3, 3],
+            'lengthscaleR': [1, 1, 1, 1],
+            'varianceU': [1, 1, 1, 1],
+            'varianceR': [1, 1, 1, 1],
+            'tapering_range': 2,
+            'd_MaternU': 3,
+            'd_MaternR': 3,
+            'R': 3,
+            'rho': rho, # Try 10, 15, 20 - higher rho should encourage more global structure.
+            'gamma': gamma, # Try 10, 20 - higher gamma should encourage more local structure.
+            'maxiter': 30,
+            'K0': 1,
+            'epsilon': 1e-5,
+            'seed': seed}
+    X, Rtensor, M = glskf.GLSKF(I, Omega, **params_test)
 
-    m_std = float(np.std(M))
-    r_std = float(np.std(Rtensor))
+    test_rmse = float(np.sqrt(np.mean((I[test_mask] - X[test_mask])**2)))
+    test_recovery = float(1 - np.linalg.norm((I[test_mask] - X[test_mask]) / np.linalg.norm(I[test_mask])))
+    test_error = float(np.linalg.norm(I[test_mask] - X[test_mask]) / np.linalg.norm(I[test_mask]))
+    test_rmse_clean = float(np.sqrt(np.mean((signal[test_mask] - X[test_mask])**2)))
+    test_recovery_clean = float(1 - np.linalg.norm((signal[test_mask] - X[test_mask]) / np.linalg.norm(signal[test_mask])))
+    test_error_clean = float(np.linalg.norm(signal[test_mask] - X[test_mask]) / np.linalg.norm(signal[test_mask]))
 
-    results.append({
-        'psi': psi, 'sigma': sigma, 'gamma': gamma, 'lambda_': lam,
-        'M_std': m_std, 'R_std': r_std
-    })
+    iter += 1
+    data.append({'iteration': iter,
+                 'rho': rho,
+                 'gamma': gamma,
+                 'test_rmse': test_rmse,
+                 'test_recovery': test_recovery,
+                 'test_error': test_error,
+                 'test_rmse_clean': test_rmse_clean,
+                 'test_recovery_clean': test_recovery_clean,
+                 'test_error_clean': test_error_clean})
 
-    print(f"psi={psi:.6f}, sigma={sigma:.6f}, gamma={gamma:.6f}, lambda_={lam:.6f}",
-          f"M_std={m_std}, R_std={r_std}")
-    
-    test_iter += 1
-    data = pd.DataFrame(results)
-    data['score'] = (data['M_std'] - 5).abs() - (data['R_std'] - 5).abs()
-    mask = data['M_std'].between(3.5, 7.5) & data['R_std'].between(3.5, 7.5)
-    print(data.loc[mask].sort_values('score'))
-    print(f"iteration: {test_iter} out of 128")
-
-metrics = compute_diagnostics(I, Omega, X, M_true, R_true, M, Rtensor)
-print_diagnostics(metrics)
+df = pd.DataFrame(data)
+print(df.to_string())

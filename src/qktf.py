@@ -233,7 +233,7 @@ def kronecker_mvm(Kr, vec, shape):
     D = len(shape) # gets the number of dimensions.
     x = vec.reshape(shape, order = 'F') # reshapes to tensor size.
 
-    for d in range(D): # iterates through the dimensions.
+    for d in range(D-1, -1, -1): # iterates through the dimensions.
         x_unfold = unfold(x, d) # mode-d unfolding.
         x_unfold = Kr[d] @ x_unfold # matrix multiplication.
         x = fold(x_unfold, shape, d) # folds back to tensor.
@@ -282,9 +282,9 @@ def local_admm(lambda_, gamma, priorvalue, a, v, Kr, pos_obs, total_data, YR_til
     """
     N = numpy.array(YR_tilde.shape) # gets the shape of YR_tilde and set N to it.
     n_obs = pos_obs[0].shape[0] # collects the number of observations.
-    Y_obs = (YR_tilde.ravel(order = 'F'))[pos_obs] # slices the fixed tensor to only observed entries.
-    a_obs = (a.ravel(order = 'F'))[pos_obs] # slices the auxiliary variable to only observed entries.
-    v_obs = (v.ravel(order = 'F'))[pos_obs] # slices the Lagrangian multiplier to only observed entries.
+    Y_obs = (YR_tilde.ravel(order = 'F'))[pos_obs[0]] # slices the fixed tensor to only observed entries.
+    a_obs = (a.ravel(order = 'F'))[pos_obs[0]] # slices the auxiliary variable to only observed entries.
+    v_obs = (v.ravel(order = 'F'))[pos_obs[0]] # slices the Lagrangian multiplier to only observed entries.
     x0 = priorvalue.copy() # sets the initial guess for the ADMM algorithm as the previous iteration of the latent matrix.
 
     # ========== ADMM iterations =========
@@ -298,6 +298,7 @@ def local_admm(lambda_, gamma, priorvalue, a, v, Kr, pos_obs, total_data, YR_til
         
         ar = linalg.LinearOperator((n_obs, n_obs), matvec=matvec, dtype=b.dtype) # constructs the Linear Operator.
         w, info = linalg.cg(ar, b, x0=x0, atol=1e-4, maxiter=max_iter) # performs the Conjugate Gradient method.
+
         w_full = np.zeros(total_data)
         w_full[pos_obs] = w
         r = kronecker_mvm(Kr, w_full, N) # calculates r.
@@ -319,7 +320,7 @@ def local_admm(lambda_, gamma, priorvalue, a, v, Kr, pos_obs, total_data, YR_til
         if np.linalg.norm(res_pri) <= eps_pri and np.linalg.norm(res_dual) <= eps_dual:
             break
 
-    return r, a_obs, v_obs
+    return r.ravel(order='F'), a_obs, v_obs
 
 def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, varianceR: list, tapering_range, d_MaternU, d_MaternR, R, psi, sigma, gamma, lambda_, tau, max_iter, K0, epsilon, seed):
     """
@@ -343,7 +344,6 @@ def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, vari
         M_component (ndarray): reconstructed global component of the tensor.
     """
     # ========== Setup ==========
-    np.random.seed(seed) # sets the random seed for reproducibility of results.
     N = I.shape # sets N as the shape of the input tensor.
     N = numpy.array(N) # converts N to a numpy array - created using NumPy and not CuPy as it's used for integer indexing. CuPy arrays cannot be used for integer indexing.
     
@@ -417,6 +417,7 @@ def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, vari
     a = np.zeros(N) # intialises the auxiliary variable used in the local ADMM algorithm.
     v = np.zeros(N) # initialises the Lagrangian multiplier in the local ADMM algorithm.
     Rvector = Rtensor.ravel(order = 'F') # vectorised local tensor.
+    Rvector_temp = Rtensor.ravel(order = 'F') # creates a copy of the vectorised local tensor for use in the ADMM iterations.
     X[pos_miss] = M[pos_miss] + Rtensor[pos_miss] # sets the missing entries of X to the sum of the missing entries of global and local components.
 
     d_all = np.arange(D) # creates a vector of integers from 0 to D-1 - used for indexing.
@@ -448,15 +449,11 @@ def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, vari
             Ltensor_mask = Ltensor * Omega # masks the local tensor.
 
             # Actual Local ADMM optimisation call.
-            Rvector, a, v = local_admm(lambda_, gamma, Rvector[pos_obs[0]], a, v, Kr, pos_obs[0], total_data, Ltensor_mask, 100, tau)
+            Rvector, a_obs, v_obs = local_admm(lambda_, gamma, Rvector[pos_obs[0]], a, v, Kr, pos_obs[0], total_data, Ltensor_mask, 100, tau)
             Rtensor = Rvector.reshape(N, order = 'F') # reshapes the Rvector back to tensor size.
-            r_std = float(np.std(Rtensor))
-            if r_std > 0.1:
-                Rtensor_unfold = unfold(Rtensor, D-1) # unfolds along the last dimension - used in covariance iteration.
-                Rtensor_unfold_obs = Rtensor_unfold[:, idx] # ensures only calculating where there's observed entries in columns.
-                Kr[D-1] = np.cov(Rtensor_unfold_obs) # calculates the new covariance in the last dimension.
-            else:
-                Kr[D-1] = np.eye(N[D-1]) # if the local tensor is very small, set the covariance to identity to avoid numerical issues.
+            Rtensor_unfold = unfold(Rtensor, D-1) # unfolds along the last dimension - used in covariance iteration.
+            Rtensor_unfold_obs = Rtensor_unfold[:, idx] # ensures only calculating where there's observed entries in columns.
+            Kr[D-1] = np.cov(Rtensor_unfold_obs) # calculates the new covariance in the last dimension.
         else:
             Rtensor = np.zeros_like(Rtensor) # if local iteration isn't run, just set the local tensor to zero.
 
@@ -475,9 +472,10 @@ def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, vari
             break
         
         if (tol < epsilon) or (iter >= max_iter):
-            print(f"tol: {tol}")
-            print(f"epsilon: {epsilon}")
             pbar.close()
+            if (iter >= max_iter):
+                print("Maximum number of iterations reached.")
             break
+
         
     return Xori, Rtensor, M + np.mean(train_matrix)

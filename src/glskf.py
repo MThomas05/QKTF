@@ -109,7 +109,9 @@ def cg_local(gamma, Kr, pos_obs, YR_tilde, priorvalue, max_iter):
     x_gpu, info = linalg.cg(A_op, b, x0=x0, atol=1e-4, maxiter=max_iter)
     return x_gpu, info
 
-def GLSKF(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, varianceR: list, tapering_range, d_MaternU, d_MaternR, R, rho, gamma, maxiter, K0, epsilon):
+def GLSKF(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, varianceR: list, tapering_range, d_MaternU, d_MaternR, R, rho, gamma, maxiter, K0, epsilon, seed):
+    np.random.seed(seed)
+    numpy.random.seed(seed)
     N = I.shape
     N = numpy.array(N)
 
