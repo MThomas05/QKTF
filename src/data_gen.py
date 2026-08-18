@@ -1,17 +1,22 @@
-import numpy, torch, cupy as np
+import numpy as np
+import torch
+import cupy as cp
 from scipy.ndimage import gaussian_filter
 import pickle, os
 import hashlib
 
-def set_all_seeds(seed):
-    numpy.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-    np.random.seed(seed)
+# ========== Reproducibility ==========
 
-def gen_synthetic_tensor(shape, rank, missing_fraction, target_local_std, df, seed, device):
-    set_all_seeds(seed)
+def set_all_seeds(seed):
+    np.random.seed(seed) # seeds stream draws M_true and R_true
+    torch.manual_seed(seed) # seeds torch CPU stream, draws the noise
+    cp.random.seed(seed) # seeds cupy's stream
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed) # seeds this GPU's stream, draws Omega
+        torch.cuda.manual_seed_all(seed) # seeds all GPU streams if multiple GPUs are used
+
+def gen_synthetic_tensor(shape, rank, missing_fraction, target_local_std,
+                         noise_name, noise_params, seed, device):
     """
     Simple synthetic tensor generator with:
         Global structure: smooth low-rank structure.
@@ -22,25 +27,30 @@ def gen_synthetic_tensor(shape, rank, missing_fraction, target_local_std, df, se
         shape (tuple): input tensor shape.
         rank (int): rank used in CP decomposition.
         missing_fraction (float): percentage of missing data entries.
-        outlier_prob (float): probaility of an outlier occuring.
+        target_local_std (float): desired standard deviation of the local structure.
+        noise_name (string): name of the noise distribution.
+        noise_params (dict): parameters for the noise distribution.
         seed (int): ensures reproducibility.
         device (string): CPU or GPU performance.
 
     Returns:
         ndarray: synthetic tensor to be used in QKTF algorithm.
     """
-    torch.manual_seed(seed) # ensures reproducibility.
-    numpy.random.seed(seed) # ensures reproducibility.
+    set_all_seeds(seed) # reset every RNG before drawing anything
 
-    D = len(shape) # gets the number of dimensions.
+    D = len(shape) # numer of tensor modes
 
     # ========== Global structure ==========
-    M_true = torch.zeros(shape, device=device) # initialises the true M as a zero tensor.
+    def sigma_global(Id):
+        return (min(10, max(Id / 4, 0.5))) # scales smoothing bandwidth with axis length, capped at 10, floor at 0.5
+
+    M_true = torch.zeros(shape, device=device) # initialises the true M as a zero tensor
+
     for r in range(rank): # iterates over each rank component.
         factors = [] # stores each factor - used when generating one smooth factor per dimension.
         for d in range(D): # iterates over each dimension.
-            u_d = numpy.random.randn(shape[d]) # random vector of length shape[d].
-            u_d = gaussian_filter(u_d, sigma=10) # smooths the vector - creates global pattern.
+            u_d = np.random.randn(shape[d]) # random vector of length shape[d].
+            u_d = gaussian_filter(u_d, sigma=sigma_global(shape[d])) # smooths the vector - creates global pattern.
             factors.append(u_d) # stores smoothed factor.
 
         # Compute D-dimensional outer product.
@@ -52,54 +62,79 @@ def gen_synthetic_tensor(shape, rank, missing_fraction, target_local_std, df, se
 
         M_true += torch.tensor(component, dtype=torch.float32, device=device) # add this rank component to the true M.
 
-    M_true = M_true / M_true.std() * 5 + 50 # normalise M to have a reasonable scale.
+    M_true_std = M_true.std().item()
+
+    min_std = 1e-3
+    if M_true_std < min_std:
+        raise ValueError(
+            f"M_true.std()={M_true_std:.2e} is below the safety floor ({min_std})."
+            f"This shape/seed combination produced a degenerate global"
+            f"structure - regenerate with a different seed of adjust sigma/shape"
+        )
+
+    M_true = M_true / M_true_std * 10 # normalise M to have a reasonable scale.
 
     # ========== Local structure ==========
-    R_raw = numpy.random.randn(*shape)
-    R_true = gaussian_filter(R_raw, sigma=2) # short lengthscale vs sigma for global.
+    def sigma_local(Id, ratio=4.0, cap=4.0, floor=0.5):
+        g = sigma_global(Id)
+        return min(cap, max(g / ratio, floor))
+    
+    local_axis_sigma = [sigma_local(s) for s in shape]
+    
+    R_raw = np.random.randn(*shape)
+    R_true = gaussian_filter(R_raw, sigma=local_axis_sigma) # short lengthscale vs sigma for global.
     R_true = R_true / R_true.std() * target_local_std
     R_true = torch.tensor(R_true, dtype=torch.float32, device=device)
 
     # ========== Heavy tails ==========
-    noise = torch.distributions.StudentT(df=df, loc=0.0, scale=1.0) # generates tensor with Student's t distribution.
-    dist = noise.sample(shape).to(device) # reshapes data to input tensor shape and sets to GPU performance.
+    dist = getattr(torch.distributions, noise_name)(**noise_params) # generates tensor with Cauchy distribution.
+    noise = dist.sample(shape).to(device) # reshapes data to input tensor shape and sets to GPU performance.
     
     # ========== Tensor ==========
-    tensor = M_true + R_true + dist # actual observed data.
+    tensor = M_true + R_true + noise # actual observed data.
 
     # ========== Mask creation ==========
     Omega = torch.rand(shape, device=device) >= missing_fraction # missing entries where random values are less than missing_fraction.
 
-    return tensor, Omega, M_true, R_true, dist
+    return tensor, Omega, M_true, R_true, noise
 
 def _config_hash(cfg):
-    key = f"{cfg.TENSOR_SHAPE}_{cfg.RANK}_{cfg.MISSING_FRACTION}_{cfg.TARGET_LOCAL_STD}_{cfg.DF}"
-    return hashlib.md5(key.encode()).hexdigest()[:10]
+    # encodes the dataset defining parameters into one string
+    key = (f"{cfg.TENSOR_SHAPE}_{cfg.RANK}_{cfg.MISSING_FRACTION}_{cfg.TARGET_LOCAL_STD}"
+           f"_{cfg.NOISE_NAME}_{sorted(cfg.NOISE_PARAMS.items())}")
+    return hashlib.md5(key.encode()).hexdigest()[:10] # returns first 10 characters of the hash for brevity.
 
 def get_or_create_tensor(seed, cfg, cache_dir="data/tensors"):
     """Generate once per seed, cache to disk, reload identically for every method."""
-    os.makedirs(cache_dir, exist_ok=True)
-    path = f"{cache_dir}/tensor_seed{seed}_{_config_hash(cfg)}.pkl"
+    os.makedirs(cache_dir, exist_ok=True) # avoids a crash if the cache folder doesn't exist.
+    path = f"{cache_dir}/tensor_seed{seed}_{cfg.NOISE_NAME}_{_config_hash(cfg)}.pkl" # unqiue filename for each seed and config combination.
+
     if os.path.exists(path):
+        # if the cache exists, reuse the exact same tensor instead of regenerating.
         with open(path, "rb") as f:
             d = pickle.load(f)
-        I = np.array(d["I"]); Omega_all = np.array(d["Omega_all"])
-        M_true = np.array(d["M_true"]); R_true = np.array(d["R_true"])
-        train_mask = np.array(d["train_mask"]); test_mask = np.array(d["test_mask"])
-        return I, Omega_all, M_true, R_true, train_mask, test_mask
 
+        I = cp.array(d["I"])
+        Omega = cp.array(d["Omega"])
+        M_true = cp.array(d["M_true"])
+        R_true = cp.array(d["R_true"])
+        noise = cp.array(d["noise"])
+
+        return I, Omega, M_true, R_true, noise
+
+    # if the cache doesn't exist, generate a new tensor and save it to disk.
     tensor, Omega, M_true, R_true, noise = gen_synthetic_tensor(
-        cfg.TENSOR_SHAPE, cfg.RANK, cfg.MISSING_FRACTION, cfg.TARGET_LOCAL_STD, cfg.DF, seed, cfg.DEVICE
+        cfg.TENSOR_SHAPE, cfg.RANK, cfg.MISSING_FRACTION, cfg.TARGET_LOCAL_STD,
+        cfg.NOISE_NAME, cfg.NOISE_PARAMS, seed, cfg.DEVICE
     )
-    I = np.array(tensor); M_true = np.array(M_true); R_true = np.array(R_true)
-    Omega_all = np.array(Omega)
+    
+    I = cp.array(tensor)
+    M_true = cp.array(M_true)
+    R_true = cp.array(R_true)
+    Omega = cp.array(Omega)
+    noise = cp.array(noise)
 
-    set_all_seeds(seed)  # reset again so the train/test split is deterministic too
-    train_mask = Omega_all & (np.random.rand(*cfg.TENSOR_SHAPE) < 0.8)
-    test_mask = Omega_all & ~train_mask
-
-    with open(path, "wb") as f:
-        pickle.dump({"I": np.asnumpy(I), "Omega_all": np.asnumpy(Omega_all),
-                     "M_true": np.asnumpy(M_true), "R_true": np.asnumpy(R_true),
-                     "train_mask": np.asnumpy(train_mask), "test_mask": np.asnumpy(test_mask)}, f)
-    return I, Omega_all, M_true, R_true, train_mask, test_mask
+    with open(path, "wb") as f: # saves so future calls hit the cache branch above.
+        pickle.dump({"I": cp.asnumpy(I), "Omega": cp.asnumpy(Omega),
+                     "M_true": cp.asnumpy(M_true), "R_true": cp.asnumpy(R_true), "noise": cp.asnumpy(noise)}, f)
+    return I, Omega, M_true, R_true, noise

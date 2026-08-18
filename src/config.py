@@ -1,7 +1,8 @@
-SEEDS = [1, 2, 3, 4, 5]
+SEEDS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
 DEVICE = 'cuda'
-TENSOR_SHAPE = (2, 2, 5, 5)
-RANK = 3
-MISSING_FRACTION = 0.05
-TARGET_LOCAL_STD = 2.0
-DF = 2 # Student-t degrees of freedom for heavy tails.
+TENSOR_SHAPE = (10, 10, 10, 10)
+RANK = 6
+MISSING_FRACTION = 0.3
+TARGET_LOCAL_STD = 5.0
+NOISE_NAME = "Cauchy"
+NOISE_PARAMS = {"loc": 0.0, "scale": 1.0}

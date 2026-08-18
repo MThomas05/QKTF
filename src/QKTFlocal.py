@@ -1,4 +1,4 @@
-import cupy as np
+import cupy as cp
 import numpy
 from tqdm import tqdm
 from cupyx.scipy.linalg import khatri_rao
@@ -7,32 +7,29 @@ from cupyx.scipy.sparse import linalg, eye, csr_matrix
 def cov_matern(d, loghyper, x):
     """
     Computes the Matern covariance matrix for a given dimension.
-
-    Args:
-
-
-    Returns:
-    
     """
-    ell = np.exp(loghyper[0])
-    sf2 = np.exp(2*loghyper[1])
+    ell = cp.exp(loghyper[0])
+    sf2 = cp.exp(2*loghyper[1])
     def f(t):
         if d == 1: return 1
         if d == 3: return 1 + t
         if d == 5: return 1 + t*(1 + t/3)
         if d == 7: return 1 + t*(1 + t*(6 + t)/15)
     def m(t):
-        return f(t)*np.exp(-t)
+        return f(t)*cp.exp(-t)
     dist_sq = ((x[:, None] - x[None, :])/ell)**2
-    return sf2*m(np.sqrt(d*dist_sq))
+    return sf2*m(cp.sqrt(d*dist_sq))
 
 def bohman(loghyper, x):
-    range_ = np.exp(loghyper[0])
-    dis = np.abs(x[:, None] - x[None, :])
-    r = np.minimum(dis/range_, 1)
-    k = (1 - r)*np.cos(np.pi*r) + np.sin(np.pi*r)/np.pi
+    """
+    Compute the Bohman taper.
+    """
+    range_ = cp.exp(loghyper[0])
+    dis = cp.abs(x[:, None] - x[None, :])
+    r = cp.minimum(dis/range_, 1)
+    k = (1 - r)*cp.cos(cp.pi*r) + cp.sin(cp.pi*r)/cp.pi
     k[k < 1e-16] = 0
-    k[np.isnan(k)] = 0
+    k[cp.isnan(k)] = 0
     return k
 
 def unfold(tensor, mode):
@@ -46,7 +43,7 @@ def unfold(tensor, mode):
     Returns:
         ndarray: unfolded tensor.
     """
-    return np.reshape(np.moveaxis(tensor, mode, 0), (tensor.shape[mode], -1), order = 'F')
+    return cp.reshape(cp.moveaxis(tensor, mode, 0), (tensor.shape[mode], -1), order = 'F')
 
 def fold(mat, dim, mode):
     """
@@ -60,32 +57,30 @@ def fold(mat, dim, mode):
     Returns:
         ndarray: folded tensor.
     """
-    index = list() # creates an empty list to store the new order of dimensions
-    index.append(mode) # adds the mode to the index list
-    for i in range(dim.shape[0]): # iterates through the axis of the dimension array
-        if i != mode: # checks to ensure the current dimensions doesn't equal the mode
-            index.append(i) # adds the current dimension to the index list
-    return np.moveaxis(np.reshape(mat, list(dim[index]), order = 'F'), 0, mode)
+    index = [mode] + [i for i in range(dim.shape[0]) if i != mode]
+    return cp.moveaxis(cp.reshape(mat, list(dim[index]), order='F'), 0, mode)
 
-def build_khatri_rao(U, dims):
+def enforce_psd(K, rel_floor=1e-4, abs_floor=1e-4):
     """
-    Builds the Khatri-Rao product of a list of matrices, all dimensions except the current one.
-
+    Projects a symmetric matrix onto the nearest PSD matrix with a guaranteed minimum eigenvalue
+    
     Args:
-        U (list): list of D latent matrices, where D is the number of dimensions of the input tensor.
-        dims (ndarray): current dimension being updated in the ADMM iterations of the QKTF algorithm.
-
+        K (n, n): symmetric matrix - empirically re-estimated K_r.
+        rel_floor: minimum eigenvalue as a fraction of the largest eigenvalue.
+        
     Returns:
-        ndarray: Khatri-Rao product of the list of matrices.
-    """
-    dims = [int(d) for d in dims] # sets D as the number of dimensions of the input tensor, which is equal to the length of the list of latent matrices.
-    if len(dims) == 1:
-        return U[dims[0]]
-    else:
-        result = U[dims[-1]]
-        for i in range(len(dims) - 2, -1, -1):
-            result = khatri_rao(result, U[dims[i]])
-        return result
+        K_psd: PSD matrix with eigenvalues >= rel_floor * max_eig
+        """
+    K_sym = (K + K.T) / 2 # forces exact symmetry.
+    eigvals, eigvecs = cp.linalg.eigh(K_sym) # eigendecompose.
+    max_eig = cp.abs(eigvals).max()
+    min_eig = cp.abs(eigvals).min()
+    floor = cp.maximum(abs_floor, rel_floor * max_eig)
+    n_floor_clipped = int((eigvals < floor).sum())
+    eigvals_clipped = cp.maximum(eigvals, floor)
+    K_psd = eigvecs @ cp.diag(eigvals_clipped) @ eigvecs.T # reconstructs from the clipped spectrum.
+
+    return K_psd, n_floor_clipped
 
 def prox_map(xi, alpha, tau):
     """
@@ -101,7 +96,7 @@ def prox_map(xi, alpha, tau):
     """
     low = (tau - 1)/alpha # calculates the lower bound for the proximal operator.
     high = tau/alpha # calculates the upper bound for the proximal operator.
-    return xi - np.maximum((tau - 1)/alpha, np.minimum(xi, tau/alpha)) # applies the proximal operator to the input vector.
+    return xi - cp.maximum((tau - 1)/alpha, cp.minimum(xi, tau/alpha)) # applies the proximal operator to the input vector.
 
 def kronecker_mvm(Kr, vec, shape):
     """
@@ -125,7 +120,7 @@ def kronecker_mvm(Kr, vec, shape):
 
     return x.ravel(order = 'F')
 
-def local_operator(vec, pos_obs, Kr, gamma, lambda_, N):
+def local_operator(vec, pos_obs, Kr, gamma, lambda_, N, total_data, buffer=None):
     """
     Constructs the local linear operator used in the local ADMM algorithm.
 
@@ -140,12 +135,13 @@ def local_operator(vec, pos_obs, Kr, gamma, lambda_, N):
     Returns:
         ndarray: linear operator used in the Conjugate Gradient method for the local ADMM optimisation steps of the QKTF algorithm. 
     """
-    x = np.zeros(int(numpy.prod(N))) # zero-pads to vector of length N.
-    x[pos_obs] = vec # slices the vector to the length of osberved entires - |Omega|.
-    Ap = kronecker_mvm(Kr, x, N) # constructs the covariance matrices via Kronecker MVM.
-    return lambda_ * Ap[pos_obs] + gamma * vec
+    buffer[:] = 0.0
+    buffer[pos_obs] = vec # slices the vector to the length of osberved entires - |Omega|.
+    Ap = kronecker_mvm(Kr, buffer, N) # constructs the covariance matrices via Kronecker MVM.
+    return lambda_ * Ap[pos_obs] + ((gamma / total_data) * vec)
 
-def local_admm(lambda_, gamma, priorvalue, a, v, Kr, pos_obs, total_data, YR_tilde, max_iter, tau):
+def local_admm(lambda_, gamma, w_prior, xi, x, Kr, pos_obs, total_data, YR_tilde,
+               inner_maxiter, tau, cg_maxiter, rel_tol, abs_tol, verbose=False):
     """
     Local ADMM algorithm for updating the local tensor in the QKTF algorithm.
 
@@ -168,46 +164,69 @@ def local_admm(lambda_, gamma, priorvalue, a, v, Kr, pos_obs, total_data, YR_til
     N = numpy.array(YR_tilde.shape) # gets the shape of YR_tilde and set N to it.
     n_obs = pos_obs[0].shape[0] # collects the number of observations.
     Y_obs = (YR_tilde.ravel(order = 'F'))[pos_obs[0]] # slices the fixed tensor to only observed entries.
-    a_obs = (a.ravel(order = 'F'))[pos_obs[0]] # slices the auxiliary variable to only observed entries.
-    v_obs = (v.ravel(order = 'F'))[pos_obs[0]] # slices the Lagrangian multiplier to only observed entries.
-    x0 = priorvalue.copy() # sets the initial guess for the ADMM algorithm as the previous iteration of the latent matrix.
+    x0 = w_prior.copy() # sets the initial guess for the ADMM algorithm as the previous iteration of the latent matrix.
+
+    w_full = cp.zeros(total_data, dtype=Y_obs.dtype) # zero-padding reused across every CG matvec call.
+
+    def matvec(vec): # performs y = Ax for the linear operator used in the Conjugate Gradient method.
+        return local_operator(vec, pos_obs, Kr, gamma, lambda_, N, total_data, buffer=w_full) # returns the linear operator used in the Conjugate Gradient method.
+
+    ar = linalg.LinearOperator((n_obs, n_obs), matvec=matvec, dtype=Y_obs.dtype) # constructs the Linear Operator.
+
+    assert inner_maxiter > 0, "local_admm requires at least one ADMM sweep"
 
     # ========== ADMM iterations =========
-    for j in range(max_iter):
-        a_prev = a_obs.copy() # stores the previous auxiliary varaible used in convergence checks.
-        b = lambda_ * (Y_obs - a_obs - v_obs) # right hand side operator used in Conjugate Gradient method.
+    converged = False
+    lcg_nonconverged = 0
+    for j in range(inner_maxiter):
+        x_prev = x.copy() # stores the previous auxiliary varaible used in convergence checks.
+        w_prev = x0.copy() # stores the previous local tensor used in convergence checks.
+        b = lambda_ * (Y_obs - x) + xi # right hand side operator used in Conjugate Gradient method.
 
-        # r-update
-        def matvec(v): # performs y = Ax for the linear operator used in the Conjugate Gradient method.
-            return local_operator(v, pos_obs, Kr, gamma, lambda_, N) # returns the linear operator used in the Conjugate Gradient method.
+        if verbose:
+            print(f"[local_admm]sweep {j}: a norm={cp.linalg.norm(x):.2e}, v norm={cp.linalg.norm(xi):.2e}, b norm={cp.linalg.norm(b):.2e}")
         
-        ar = linalg.LinearOperator((n_obs, n_obs), matvec=matvec, dtype=b.dtype) # constructs the Linear Operator.
-        w, info = linalg.cg(ar, b, x0=x0, atol=1e-4, maxiter=max_iter) # performs the Conjugate Gradient method.
+        w, info = linalg.cg(ar, b, x0=x0, atol=1e-4, maxiter=cg_maxiter) # performs the Conjugate Gradient method.
 
-        w_full = np.zeros(total_data)
+        if info != 0:
+            lcg_nonconverged += 1
+        if verbose: 
+            print(f"[local_admm] sweep {j}: CG info={info}")
+
+        x0 = w
+
+        if verbose:
+            print(f"[local_admm] sweep {j}: x0 norm={cp.linalg.norm(x0):.2e}, w norm = {cp.linalg.norm(w):.2e}")
+
+        w_full[:] = 0.0
         w_full[pos_obs] = w
         r = kronecker_mvm(Kr, w_full, N) # calculates r.
 
         # auxiliary variable update
-        zeta = Y_obs - v_obs - r[pos_obs] # calculates zeta = y - x - O_1*r.
         alpha = n_obs * lambda_ # calcualtes the parameter for the Proximal operator.
-        a_obs = prox_map(zeta, alpha, tau) # Proximal operator used for the quantile function.
+        x = prox_map(Y_obs - r[pos_obs] + (xi/lambda_), alpha, tau) # Proximal operator used for the quantile function.
     
         # Lagrangian multiplier update
-        v_obs = v_obs + lambda_ * (r[pos_obs] + a_obs - Y_obs) # update for Lagrangian multiplier.
+        xi = xi - lambda_ * (r[pos_obs] + x - Y_obs)
+
+        if verbose:
+            print(f"[local_admm] sweep {j}: a norm={cp.linalg.norm(x):.2e}, v norm={cp.linalg.norm(xi):.2e}, r norm={cp.linalg.norm(r):.2e}")
 
         # convergence criterion.
-        res_pri = r[pos_obs] + a_obs - Y_obs
-        res_dual = lambda_ * (a_obs - a_prev)
-        eps_pri = np.sqrt(n_obs) * 1e-4 + 1e-4 * np.maximum(np.maximum(np.linalg.norm(r[pos_obs]), np.linalg.norm(a_obs)), np.linalg.norm(Y_obs))
-        eps_dual = np.sqrt(total_data) * 1e-4 + 1e-4 * np.linalg.norm(v_obs)
-
-        if np.linalg.norm(res_pri) <= eps_pri and np.linalg.norm(res_dual) <= eps_dual:
+        res_pri = r[pos_obs] + x - Y_obs
+        res_dual = lambda_ * (x - x_prev)
+        eps_pri = cp.sqrt(n_obs) * abs_tol + rel_tol * cp.maximum(cp.maximum(cp.linalg.norm(r[pos_obs]), cp.linalg.norm(x)), cp.linalg.norm(Y_obs))
+        eps_dual = cp.sqrt(total_data) * abs_tol + rel_tol * cp.linalg.norm(xi)
+        
+        if cp.linalg.norm(res_pri) <= eps_pri and cp.linalg.norm(res_dual) <= eps_dual:
+            converged = True
             break
 
-    return r.ravel(order='F'), a_obs, v_obs
+    return r.ravel(order='F'), w, x, xi, j+1, converged, lcg_nonconverged
 
-def qktf(I, Omega, lengthscaleR: list, varianceR: list, tapering_range, d_MaternR, R, gamma, lambda_, tau, max_iter, epsilon):
+def QKTFlocal(I, Omega, lengthscaleR: list, varianceR: list,
+        tapering_range, d_MaternR, R, gamma, lambda_, tau, max_iter,
+        epsilon, inner_maxiter, cg_maxiter=500, verbose=False):
     """
     Quantized Kernelized Tensor Factorization (QKTF) algorithm for tensor completion.  
 
@@ -245,7 +264,7 @@ def qktf(I, Omega, lengthscaleR: list, varianceR: list, tapering_range, d_Matern
 
     # Binary indicator matrix
     Omega = Omega.astype(bool) # converts the binary mask to a boolean array - done due to memory efficiency (smaller than index arrays) and avoids explicit loops.
-    pos_miss = np.where(Omega == 0) # creates a tuple of arrays containing the indices of the missing entries in the tensor - can be used directly for indexing and can be unpacked correctly.
+    pos_miss = cp.where(Omega == 0) # creates a tuple of arrays containing the indices of the missing entries in the tensor - can be used directly for indexing and can be unpacked correctly.
     num_obs = int(numpy.sum(Omega)) # calculates the number of observed entries in the tensor.
     total_data = int(numpy.prod(N)) # calculates the total number of entries in the tensor.
 
@@ -253,76 +272,125 @@ def qktf(I, Omega, lengthscaleR: list, varianceR: list, tapering_range, d_Matern
     mask_matrix = [unfold(Omega, d) for d in range(D)] # creates a list of D matrices, where each matrix is the mode-d unfolding of Omega.
     mask_matrixT = [mask_matrix[d].T for d in range(D)] # creates a list of D matrices, where each matrix is the transpose of the mode-d unfolding of Omega.
     mask_flat = [mask_matrix[d].ravel(order = 'F') for d in range(D)] # creates a list of D vectors, where each vector is the flattened version of the mode-d unfolding of Omega.
-    pos_obs = [np.where(mask_flat[d] == 1) for d in range(D)] # creates a list of D arrays, containing arrays of observed entries.
+    pos_obs = [cp.where(mask_flat[d] == 1) for d in range(D)] # creates a list of D arrays, containing arrays of observed entries.
 
     # Data centering
-    idx = np.sum(mask_matrix[D-1], axis = 0) > 0 # creates a Boolean mask identifying which columns have at least one observed entry.
-    train_matrix = I * Omega # creates a mask of the tensor - setting indices to zero where there is data missing.
-    train_matrix = train_matrix[train_matrix > 0] # creates a matrix of only the observed entries into a 1D array.
-    Isubmean = I - np.mean(train_matrix) # centers the data by subtracting the mean of the observed entries from all entries in the tensor.
+    idx = cp.sum(mask_matrix[D-1], axis = 0) > 0 # creates a Boolean mask identifying which columns have at least one observed entry.
+    train_matrix = I[Omega] # creates a mask of the tensor - setting indices to zero where there is data missing.
+    centre = cp.mean(train_matrix)
+    Isubmean = I - centre # centers the data by subtracting the mean of the observed entries from all entries in the tensor.
+
     T = Isubmean * Omega # creates a tensor of the centered observed entries - setting indices to zero where there is data missing.
 
     # ========== Building covariance matrices ==========
     hyper_Kr = [None] * D # creates an empty list to store the hyperparameters for the global and local covariance tapering, list length = D.
     Kr = [None] * D # creates an empty list to store the covariance matrices for the global and local covariance tapering, list length = D.
-    inv_Ku = [None] * D # creates an empty list to store the inverse covariance matrices for the global covariance tapering, list length = D.
 
     for d in range(D-1): # iterates through each dimension of the input tensor.
-        x = np.arange(1, N[d] + 1) # creates a vector of integers from 1 to the size of the current dimension - used as input for the covariance function.
+        a = cp.arange(1, N[d] + 1) # creates a vector of integers from 1 to the size of the current dimension - used as input for the covariance function.
 
-        hyper_Kr[d] = [np.log(lengthscaleR[d]), np.log(varianceR[d]), np.log(tapering_range)] # sets the dth dimension of hyperparameters as log of lengthscale, variance, and tapering range
-        TaperM = bohman([hyper_Kr[d][2]], x) # sets the taper as the bohman taper - calls the tapering range.
-        Kr[d] = csr_matrix(cov_matern(d_MaternR, hyper_Kr[d][:2], x) * TaperM) # sets the local covariance as sparse matrix - efficient for matrix-vector product.
-
-    Kr[D-1] = np.eye(N[D-1]) # initialises the local covariance in the last dimension as identity matrix.
+        hyper_Kr[d] = [cp.log(lengthscaleR[d]), cp.log(varianceR[d]), cp.log(tapering_range)] # sets the dth dimension of hyperparameters as log of lengthscale, variance, and tapering range
+        TaperM = bohman([hyper_Kr[d][2]], a) # sets the taper as the bohman taper - calls the tapering range.
+        Kr[d] = csr_matrix(cov_matern(d_MaternR, hyper_Kr[d][:2], a) * TaperM) # sets the local covariance as sparse matrix - efficient for matrix-vector product.
+    Kr[D-1] = csr_matrix(eye(N[D-1])) # initialises the local covariance in the last dimension as identity matrix.
 
     # ========== Initialisation for ADMM iterations ==========
-    X = T # sets the initial value of the fixed tensor as the centered observed entries.
+    X = T.copy() # sets the initial value of the fixed tensor as the centered observed entries.
     X[pos_miss] = T.sum() / num_obs # sets the missing entries of the fixed tensor as the mean of the observed entries.
 
-    Rtensor = np.zeros(N) # initialises the local tensor with the same shape as the input data, filled with zeros.
-    a = np.zeros(N) # intialises the auxiliary variable used in the local ADMM algorithm.
-    v = np.zeros(N) # initialises the Lagrangian multiplier in the local ADMM algorithm.
+    Rtensor = cp.zeros(N) # initialises the local tensor with the same shape as the input data, filled with zeros.
+    w_warm = cp.zeros(num_obs)
+    x = cp.zeros(num_obs) # intialises the auxiliary variable used in the local ADMM algorithm.
+    xi = cp.zeros(num_obs) # initialises the Lagrangian multiplier in the local ADMM algorithm.
     Rvector = Rtensor.ravel(order = 'F') # vectorised local tensor.
     Rvector_temp = Rtensor.ravel(order = 'F') # creates a copy of the vectorised local tensor for use in the ADMM iterations.
     X[pos_miss] = Rtensor[pos_miss] # sets the missing entries of X to the sum of the missing entries of global and local components.
 
-    d_all = np.arange(D) # creates a vector of integers from 0 to D-1 - used for indexing.
-    train_norm = np.linalg.norm(T) # calculates the norm of the tensor of the centered observed entries - used for convergence checking.
+    d_all = cp.arange(D) # creates a vector of integers from 0 to D-1 - used for indexing.
+    train_norm = cp.linalg.norm(T) # calculates the norm of the tensor of the centered observed entries - used for convergence checking.
     last_ten = T.copy() # initialises a tensor to store the value of the fixed tensor from the previous iteration for convergence checking.
-    pbar = tqdm(total=max_iter, desc="QKTF Iterations") # creates a progress bar for the ADMM iterations.
+    pbar = tqdm(total=max_iter, desc="QKTFlocal Iterations") # creates a progress bar for the ADMM iterations.
     iter = 0 # initialises the iteration counter for the ADMM algorithm.
+    local_sweep_history = []
+    local_hit_cap = 0
+    local_cg_nonconverged = 0
+    kr_last_history = []
 
     while True: # runs the ADMM iterations until the maximum number of iterations is reached.
-        Ltensor = X # intialises the local tensor as the residual.
+        l_sweeps, l_converged = None, None
+    
+        Ltensor = X
         Ltensor_mask = Ltensor * Omega # masks the local tensor.
 
-        # Actual Local ADMM optimisation call.
-        Rvector, a_obs, v_obs = local_admm(lambda_, gamma, Rvector[pos_obs[0]], a, v, Kr, pos_obs[0], total_data, Ltensor_mask, 100, tau)
+           # Actual Local ADMM optimisation call.
+        Rvector, w_warm, x, xi, l_sweeps, l_converged, lcg_nonconverged = local_admm(
+            lambda_, gamma, w_warm, xi, x, Kr, pos_obs[0], total_data,
+            Ltensor_mask, inner_maxiter, tau, cg_maxiter=cg_maxiter, rel_tol=1e-4, abs_tol=1e-4, verbose=verbose
+            )
+
+        local_sweep_history.append(l_sweeps)
+        if not l_converged:
+            local_hit_cap += 1
+        local_cg_nonconverged += lcg_nonconverged
+
         Rtensor = Rvector.reshape(N, order = 'F') # reshapes the Rvector back to tensor size.
         Rtensor_unfold = unfold(Rtensor, D-1) # unfolds along the last dimension - used in covariance iteration.
         Rtensor_unfold_obs = Rtensor_unfold[:, idx] # ensures only calculating where there's observed entries in columns.
-        Kr[D-1] = np.cov(Rtensor_unfold_obs) # calculates the new covariance in the last dimension.
+        Kr_raw = cp.cov(Rtensor_unfold_obs) # calculates the new covariance in the last dimension.
+        Kr_psd, n_clip = enforce_psd(Kr_raw)
+        a_last = cp.arange(1, N[D-1] + 1)
+        TaperM_last = bohman([cp.log(tapering_range)], a_last)
+        Kr_tapered = Kr_psd * TaperM_last
+        Kr[D-1] = csr_matrix(Kr_tapered)
+
+        kr_raw_max = float(cp.abs(Kr_raw).max())
+        kr_tapered_max = float(cp.abs(Kr_tapered).max())
+        kr_psd_max = float(Kr[D-1].max())
+        kr_last_history.append((kr_raw_max, kr_tapered_max, kr_psd_max))
+        if verbose:
+            print(f"[qktf] iter {iter}: Kr[D-1] max raw={kr_raw_max:.4g} "
+                  f"tapered={kr_tapered_max:.4g} post-PSD={kr_psd_max:.4g}")
 
         X[pos_miss] = Rtensor[pos_miss] # updates the missing entries of the fixed tensor as the sum of the global component and the local tensor.
-        Xori = X + np.mean(train_matrix) # adds the mean back into X.
+        Xori = X + centre # adds the mean back into X.
+
+        print(f"[QKTFlocal] Rtensor_norm={cp.linalg.norm(Rtensor)}",
+              f"[QKTFlocal] Xori_norm={cp.linalg.norm(Xori)}")
 
         # Convergence checks
         iter += 1 # increments the iteration counter.
-        tol = np.linalg.norm((X - last_ten)) / train_norm # calculates the convergence metric as the relative change in the fixed tensor.
+        tol = cp.linalg.norm((X - last_ten)) / train_norm # calculates the convergence metric as the relative change in the fixed tensor.
         last_ten = X.copy() # updates the tensor for convergence checking to the current fixed tensor.
 
         pbar.update(1)
+        pbar.set_postfix({
+            'tol': f'{tol:.2e}',
+            'l_sweeps': ('-' if l_sweeps is None else l_sweeps)
+        })
         
-        if np.isnan(tol) or np.isinf(tol): # checks for numerical issues in convergence metric.
+        if cp.isnan(tol) or cp.isinf(tol): # checks for numerical issues in convergence metric.
             pbar.set_postfix({'tol': f'{tol:.2e}', 'epoch': iter})
             break
         
-        if (tol < epsilon) or (iter >= max_iter):
+        if (tol < epsilon and iter > 1) or (iter >= max_iter):
             pbar.close()
             if (iter >= max_iter):
                 print("Maximum number of iterations reached.")
             break
 
+    # ========== ADMM convergence summary ==========
+    if len(local_sweep_history) > 0:
+        l_arr = numpy.array(local_sweep_history)
+        print(f"local_admm: {len(l_arr)} calls, sweeps used avg={l_arr.mean():.1f} "
+              f"max={l_arr.max()} (cap={inner_maxiter}); hit cap in {local_hit_cap}/{len(l_arr)} "
+              f"calls ({100 * local_hit_cap / len(l_arr):.1f}%) "
+              f"{local_cg_nonconverged} inner CG solve(s) did not reach atol within cg_maxiter={cg_maxiter}")
+
+    if len(kr_last_history) > 0:
+        kr_arr = numpy.array(kr_last_history)  # columns: raw_max, tapered_max, psd_max, n_ceil
+        print(f"Kr[D-1] magnitude over {len(kr_arr)} re-estimation(s): "
+              f"raw max range=[{kr_arr[:, 0].min():.4g}, {kr_arr[:, 0].max():.4g}], "
+              f"post-taper range=[{kr_arr[:, 1].min():.4g}, {kr_arr[:, 1].max():.4g}], "
+              f"post-PSD range=[{kr_arr[:, 2].min():.4g}, {kr_arr[:, 2].max():.4g}]")
         
     return Xori, Rtensor
