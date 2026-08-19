@@ -6,21 +6,33 @@ import numpy
 from tqdm import tqdm
 
 def cov_matern(d, loghyper, x):
+    """
+    Computes the Matern covariance matrix for a given dimension.
+    """
     ell = cp.exp(loghyper[0])
-    sf2 = cp.exp(2 * loghyper[1])
+    sf2 = cp.exp(2*loghyper[1])
     def f(t):
         if d == 1: return 1
         if d == 3: return 1 + t
-        if d == 5: return 1 + t * (1 + t / 3)
-        if d == 7: return 1 + t * (1 + t * (6 + t) / 15)
+        if d == 5: return 1 + t*(1 + t/3)
+        if d == 7: return 1 + t*(1 + t*(6 + t)/15)
     def m(t):
-        return f(t) * cp.exp(-t)
-    dist_sq = ((x[:, None] - x[None, :]) / ell) ** 2
-    return sf2 * m(cp.sqrt(d * dist_sq))
+        return f(t)*cp.exp(-t)
+
+    if x.ndim == 2:
+        dis = x
+    else:
+        dis = cp.abs(x[:, None] - x[None, :])
+
+    dist_sq = (dis/ell)**2
+    return sf2*m(cp.sqrt(d*dist_sq))
 
 def bohman(loghyper, x):
     range_ = cp.exp(loghyper[0])
-    dis = cp.abs(x[:, None] - x[None, :])
+    if x.ndim == 2:
+        dis = x
+    else:
+        dis = cp.abs(x[:, None] - x[None, :])
     r = cp.minimum(dis / range_, 1)
     k = (1 - r) * cp.cos(cp.pi * r) + cp.sin(cp.pi * r) / cp.pi
     k[k < 1e-16] = 0
@@ -136,7 +148,11 @@ def cg_local(gamma, Kr, pos_obs, YR_tilde, priorvalue, max_iter):
     x_gpu, info = linalg.cg(A_op, b, x0=x0, atol=1e-4, maxiter=max_iter)
     return x_gpu, info
 
-def GLSKF(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, varianceR: list, tapering_range, d_MaternU, d_MaternR, R, rho, gamma, maxiter, K0, epsilon, distance_matrix=None, seed=None):
+def GLSKF(I, Omega, lengthscaleU: list, lengthscaleR: list,
+        varianceU: list, varianceR: list,
+        tapering_range, d_MaternU, d_MaternR, R,
+        rho, gamma, maxiter, K0, epsilon,
+        distance_matrix=None, seed=None):
 
     N = I.shape
     N = numpy.array(N)

@@ -21,7 +21,9 @@ def cov_matern(d, loghyper, x):
     if x.ndim == 2:
         dis = x
     else:
-        dist_sq = ((x[:, None] - x[None, :])/ell)**2
+        dis = cp.abs(x[:, None] - x[None, :])
+
+    dist_sq = (dis/ell)**2
     return sf2*m(cp.sqrt(d*dist_sq))
 
 def bohman(loghyper, x):
@@ -434,10 +436,6 @@ def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, vari
     D = I.ndim # sets D as the number of dimensions of the input tensor.
 
     # Assert inputs
-    assert len(lengthscaleU) == D # ensures the number of lengthscales provided matches the number of dimensions of the input tensor.
-    assert len(lengthscaleR) == D # ensures the number of lengthscales providede matches the number of dimensions of the input tensor.
-    assert len(varianceU) == D # ensures the number of variances provided matches the number of dimensions of the input tensor.
-    assert len(varianceR) == D # ensures the number of variances provided matches the number of dimensions of the input tensor.
     assert I.shape == Omega.shape # ensures the input tensor and the binary mask have the same shape.
     assert R > 0 # ensures the CP decomposition rank is a positive integer.
     assert 0 < tau < 1 # ensures the quantile parameter is between 0 and 1.
@@ -447,7 +445,7 @@ def qktf(I, Omega, lengthscaleU: list, lengthscaleR: list, varianceU: list, vari
     # Binary indicator matrix
     Omega = Omega.astype(bool) # converts the binary mask to a boolean array - done due to memory efficiency (smaller than index arrays) and avoids explicit loops.
     pos_miss = cp.where(Omega == 0) # creates a tuple of arrays containing the indices of the missing entries in the tensor - can be used directly for indexing and can be unpacked correctly.
-    num_obs = int(numpy.sum(Omega)) # calculates the number of observed entries in the tensor.
+    num_obs = int(cp.sum(Omega).item()) # calculates the number of observed entries in the tensor.
     total_data = int(numpy.prod(N)) # calculates the total number of entries in the tensor.
 
     # Mask construction

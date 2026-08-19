@@ -84,4 +84,3 @@ def station_dist(pm25, station_coords):
             d_station[j, i] = distance
 
     return d_station
-
