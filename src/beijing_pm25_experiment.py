@@ -2,7 +2,7 @@ from beijing_pm25_preprocessing import load_beijing_pm25, haversine, station_dis
 from qktf import qktf
 from QKTFlocal import QKTFlocal
 from QKTFglobal import QKTFglobal
-from glskf import glskf
+from glskf import GLSKF
 import pandas as pd
 import numpy as np
 import cupy as cp
@@ -85,7 +85,7 @@ def mask_construct(I, mask_original, seed, missing):
     return I_true, I_train, I_test, mask_train, mask_test
 
 # ----- Evaluation -----
-def evaluate_method(method, X, Rtensor, M, I, mask_train, mask_test, missing, runtime):
+def evaluate_method(method, X, Rtensor, M, I, mask_train, mask_test, missing, runtime, tau):
     """
     Evaluate reconstructoin on artificially hidden observations only.
     
@@ -104,6 +104,8 @@ def evaluate_method(method, X, Rtensor, M, I, mask_train, mask_test, missing, ru
     medae = float(cp.median(cp.abs(I[mask_test] - X[mask_test])))
     rmse = float(cp.sqrt(cp.mean(I[mask_test] - X[mask_test]) ** 2))
     recovery = float(1 - cp.linalg.norm(I[mask_test] - X[mask_test]) / cp.linalg.norm(I[mask_test] - X[mask_test]))
+    pinball = float(np.mean(np.where(I[mask_test] - X[mask_test] >= 0,
+                                         tau * (I[mask_test] - X[mask_test]), (1 - tau) * -(I[mask_test] - X[mask_test]))))
 
     metrics = {
         "method": method, "missing": missing,
@@ -174,7 +176,44 @@ for missing in missingness:
     runtime = time.perf_counter() - start
 
     all_rows.append(evaluate_method(
-        "QKTF", qktf_x, qktf_rtensor, qktf_m, I_true, mask_train, mask_test, missing, runtime
+        "QKTF", qktf_x, qktf_rtensor, qktf_m, I_true, mask_train, mask_test, missing, runtime, tau
     ))
 
     # ----- QKTFlocal -----
+    cp.cuda.Stream.null.synchronize()
+    start = time.perf_counter()
+    qktflocal_x, qktflocal_rtensor = QKTFlocal(I_train.copy(), mask_train.copy(), **qktflocal_params)
+    cp.cuda.Stream.null.synchronize()
+    runtime = time.perf_counter() - start
+
+    all_rows.append(evaluate_method(
+        "QKTFlocal", qktflocal_x, qktflocal_rtensor, I_true, mask_train, mask_test, missing, runtime, tau
+    ))
+
+    # ----- QKTFglobal -----
+    cp.cuda.Stream.null.synchronize()
+    start = time.perf_counter()
+    qktfglobal_x, qktfglobal_m = QKTFglobal(I_train.copy(), mask_train.copy(), **qktfglobal_params)
+    cp.cuda.Stream.null.synchronize()
+    runtime = time.perf_counter() - start
+
+    all_rows.append(evaluate_method(
+        "QKTFglobal", qktfglobal_x, qktfglobal_m, I_true, mask_train, mask_test, missing, runtime, tau
+    ))
+
+    # ----- GLSKF -----
+    cp.cuda.Stream.null.synchronize()
+    start = time.perf_counter()
+    glskf_x, glskf_rtensor, glskf_m = GLSKF(I_train.copy(), mask_train.copy(), **glskf_params)
+    cp.cuda.Stream.null.synchronize()
+    runtime = time.perf_counter() - start
+
+    all_rows.append(evaluate_method(
+        "GLSKF", glskf_x, glskf_rtensor, glskf_m, I_true, mask_train, mask_test, missing, runtime, tau
+    ))
+
+# ----- Results -----
+results_df = pd.DataFrame(all_rows)
+results_df.to_csv("results/final_beijing_pm25_results.csv", index=False)
+print("\nFinal results:")
+print(results_df.to_string(index=False))
