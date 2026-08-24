@@ -84,6 +84,37 @@ def mask_construct(I, mask_original, seed, missing):
 
     return I_true, I_train, I_test, mask_train, mask_test
 
+# ----- Evaluation -----
+def evaluate_method(method, X, Rtensor, M, I, mask_train, mask_test, missing, runtime):
+    """
+    Evaluate reconstructoin on artificially hidden observations only.
+    
+    Inputs:
+        method (string): method that is run
+        X (ndarray): output tensor from the method
+        Rtensor (ndarray): output local tensor from the method
+        M (ndarray): output global tensor from the method
+        I (ndarray): input tensor
+        mask (ndarray): mask placed on the input tensor
+        missing (float): missingness fraction for the mask
+        runtime (float): total runtime for each method"""
+
+    # ----- Evaluation metrics -----
+    mae = float(cp.mean(cp.abs(I[mask_test] - X[mask_test])))
+    medae = float(cp.median(cp.abs(I[mask_test] - X[mask_test])))
+    rmse = float(cp.sqrt(cp.mean(I[mask_test] - X[mask_test]) ** 2))
+    recovery = float(1 - cp.linalg.norm(I[mask_test] - X[mask_test]) / cp.linalg.norm(I[mask_test] - X[mask_test]))
+
+    metrics = {
+        "method": method, "missing": missing,
+        "n_test": int(mask_train.sum()), "n_train": int(mask_test.sum()),
+        "test_mae": mae, "test_medae": medae, "test_rmse": rmse, "test_rr": recovery,
+        "rtensor_norm": float(cp.linalg.norm(Rtensor)), "m_norm": float(cp.linalg.norm(M)),
+        "x_norm": float(cp.linalg.norm(X)), "runtime": runtime
+    }
+
+    return metrics
+
 # ----- Hyper-parameter setting -----
 sigma, lambda_, qktf_gamma, psi, tau = 1e-3, 1e-3, 1e-4, 10, 0.5
 rho, glskf_gamma = 15, 30
@@ -119,3 +150,31 @@ glskf_params = {
     "maxiter": 200, "K0": 40,
     "distance_matrix": distance_matrices, "seed": seed, "epsilon": 1e-4 
 }
+
+# ----- Experiment -----
+missingness = [0.3, 0.5, 0.7]
+all_rows = []
+
+for missing in missingness:
+    print(f"Missingness: {int(missingness*100)}%")
+
+    # ----- Tensor construction -----
+    I_true, I_train, I_test, mask_train, mask_test = mask_construct(I, mask_original, seed, missing)
+
+    I_train = cp.asarray(I_train)
+    I_test = cp.asarray(I_test)
+    mask_train = cp.asarray(mask_train)
+    mask_test = cp.asarray(mask_test)
+
+    # ----- QKTF -----
+    cp.cuda.Stream.null.synchronize()
+    start = time.perf_counter()
+    qktf_x, qktf_rtensor, qktf_m = qktf(I_train.copy(), mask_train.copy(), **qktf_params)
+    cp.cuda.Stream.null.synchronize()
+    runtime = time.perf_counter() - start
+
+    all_rows.append(evaluate_method(
+        "QKTF", qktf_x, qktf_rtensor, qktf_m, I_true, mask_train, mask_test, missing, runtime
+    ))
+
+    # ----- QKTFlocal -----
