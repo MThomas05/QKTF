@@ -14,6 +14,12 @@ results/
 papers/
 notes/
 sandbox/
+src/glskf_test.py
+src/glskf.py
+src/QKTFglobal.py
+src/QKTFlocal.py
+src/QKTFlocal_test.py
+src/QKTFglobal_test.py
 
 # Packaging
 *.egg-info
