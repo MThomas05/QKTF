@@ -7,7 +7,7 @@ I = np.asarray(precip.values)
 mask_original = ~np.isnan(I) 
 
 # ----- Mask construction -----
-def train_test_split(I, mask_original, seed):
+def train_val_split(I, mask_original, seed):
     """Function that constructs the artificial mask
     
     Inputs:
@@ -59,7 +59,7 @@ def train_test_split(I, mask_original, seed):
 if __name__ == "__main__":
     seed = 456
 
-    I_true, I_train, I_val, mask_train, mask_val = train_test_split(
+    I_true, I_train, I_val, mask_train, mask_val = train_val_split(
         I, mask_original, seed
     )
 
@@ -83,4 +83,4 @@ if __name__ == "__main__":
     np.savez(path, I_true=I_true, I_train=I_train, I_val=I_val,
              mask_train=mask_train, mask_val=mask_val, **metadata)
 
-    print("ERA5 development and test splits saved.")
+    print("ERA5 training and validation splits saved.")
