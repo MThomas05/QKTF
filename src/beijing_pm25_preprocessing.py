@@ -6,7 +6,8 @@ folder = "Data/PRSA2017_Data_20130301-20170228/PRSA_Data_20130301-20170228"
 
 def load_beijing_pm25(folder):
     files = [os.path.join(folder, f) # joins the path 'folder/f'
-            for f in os.listdir(folder)] # iterates through the names of entries in directory 'folder'
+            for f in os.listdir(folder)
+            if f.endswith(".csv")] # iterates through the names of entries in directory 'folder'
     dfs = [pd.read_csv(f) for f in files] # creates a dataframe of all the files
     df = pd.concat(dfs, ignore_index=True) # concatenates into a single dataframe
 

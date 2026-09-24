@@ -11,26 +11,22 @@ import os
 os.makedirs("results", exist_ok=True) # ensure results folder exists.
 
 all_rows = []
-tau = 0.5
+tau = 0.75
 
 for seed in cfg.SEEDS:
     # Same cached tensor per seed, so every method tests on identical data.
     I, Omega, M_true, R_true, noise = get_or_create_tensor(seed, cfg)
+
     signal = M_true + R_true
-    print(f"M_true_norm={cp.linalg.norm(M_true)}",
-          f"R_true_norm={cp.linalg.norm(R_true)}",
-          f"signal_norm={cp.linalg.norm(signal)}")
-    print(f"|noise| median={float(cp.median(abs(noise))):.2f} "
-          f"p99={float(cp.percentile(abs(noise),99)):.1f} max={float(abs(noise).max()):.1f}")
 
     # Run all four method on this seed's data before moving to next seed.
-    all_rows.extend(run_qktf(I.copy(), Omega.copy(), signal, seed, tau=tau))
     all_rows.extend(run_glskf(I.copy(), Omega.copy(), signal, seed))
+    all_rows.extend(run_qktf(I.copy(), Omega.copy(), signal, seed, tau=tau))
     all_rows.extend(run_QKTFglobal(I.copy(), Omega.copy(), signal, seed, tau=tau))
     all_rows.extend(run_QKTFlocal(I.copy(), Omega.copy(), signal, seed, tau=tau))
 
 df = pd.DataFrame(all_rows)
-df.to_csv("results/raw_results_Cauchy_(10,_10,_10,_10)_30%_missing.csv", index=False) # unaggregated results.
+df.to_csv("results/raw_results_LogNormal_(20,400,30)_90%_missing_tau=0.75.csv", index=False) # unaggregated results.
 
 # ========== manual sanity check ==========
 metric_cols = ['pinball','test_mae', 'test_medae', 'test_rmse', 'test_recovery', 'test_error', 'runtime']
@@ -57,4 +53,4 @@ for metric in metric_cols:
 print("\n=== Aggregated (mean ± std) across seeds ===")
 print(paper_table.to_string(index=False)) # final numbers to copy into the results table.
 
-paper_table.to_csv("results/paper_table_Cauchy_(10,_10,_10,_10)_30%_missing.csv", index=False)
+paper_table.to_csv("results/paper_table_LogNormal_(20,400,30)_90%_missing_tau=0.75.csv", index=False)

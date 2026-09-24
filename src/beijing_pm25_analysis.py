@@ -57,26 +57,38 @@ print(df.to_string())
 # ----- Overall Data Visualisations -----
 fig, axes = plt.subplots(2, 2)
 
+title_fs = 8
+label_fs = 9
+tick_fs = 8
+
 # ----- Box-plot -----
 axes[0, 0].boxplot(pm25_values)
-axes[0, 0].set_title("Box-plot of PM2.5 observations")
-axes[0, 0].set_ylabel("PM2.5")
+axes[0, 0].set_title("Box-plot of PM2.5 observations", fontsize=title_fs)
+axes[0, 0].set_ylabel("PM2.5", fontsize=label_fs)
 
 # ----- Histogram -----
 axes[0, 1].hist(pm25_values, bins=50)
 axes[0, 1].axvline(sum_stat.loc["mean"], color="red", linestyle="dashed", linewidth=2, label=f"Mean={sum_stat.loc['mean']:.2f}")
 axes[0, 1].axvline(median_pm25, color="green", linestyle="dotted", linewidth=2, label=f"Median={median_pm25:.2f}")
-axes[0, 1].set_title("Histogram of PM2.5 observations")
-axes[0, 1].set_ylabel("PM2.5")
+axes[0, 1].set_title("Histogram of PM2.5 observations", fontsize=title_fs)
+axes[0, 1].set_ylabel("Frequency", fontsize=label_fs)
+axes[0, 1].set_xlabel("PM2.5", fontsize=label_fs)
 axes[0, 1].legend
 
 # ----- QQ-plot against Gaussian distribution -----
 sm.qqplot(pm25_values, line='s', ax=axes[1, 0])
-axes[1, 0].set_title("Normal Q-Q plot of Pm2.5 observations")
+axes[1, 0].set_title("Normal Q-Q plot of PM2.5 observations", fontsize=title_fs)
+axes[1, 0].set_xlabel("Theoretical Quantiles", fontsize=label_fs)
+axes[1, 0].set_ylabel("Sample Quantiles", fontsize=label_fs)
 
 # ----- Empirical Density -----
 sns.kdeplot(pm25_values, ax=axes[1, 1])
-axes[1, 1].set_title("Empirical Density Plot of PM2.5 observations")
+axes[1, 1].set_title("Empirical Density Plot of PM2.5 observations", fontsize=title_fs)
+axes[1, 1].set_xlabel("PM2.5", fontsize=label_fs)
+axes[1, 1].set_ylabel("Density", fontsize=label_fs)
+
+for ax in axes.flat:
+    ax.tick_params(axis="both", labelsize=tick_fs)
 
 plt.tight_layout()
 plt.savefig("results/beijing_pm25_diststats.png", dpi=300, bbox_inches="tight")

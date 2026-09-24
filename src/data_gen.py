@@ -122,19 +122,22 @@ def get_or_create_tensor(seed, cfg, cache_dir="data/tensors"):
 
         return I, Omega, M_true, R_true, noise
 
-    # if the cache doesn't exist, generate a new tensor and save it to disk.
-    tensor, Omega, M_true, R_true, noise = gen_synthetic_tensor(
-        cfg.TENSOR_SHAPE, cfg.RANK, cfg.MISSING_FRACTION, cfg.TARGET_LOCAL_STD,
-        cfg.NOISE_NAME, cfg.NOISE_PARAMS, seed, cfg.DEVICE
-    )
+    else:
+        tensor, Omega, M_true, R_true, noise = gen_synthetic_tensor(
+            cfg.TENSOR_SHAPE, cfg.RANK, cfg.MISSING_FRACTION, cfg.TARGET_LOCAL_STD,
+            cfg.NOISE_NAME, cfg.NOISE_PARAMS, seed, cfg.DEVICE
+            )
     
-    I = cp.array(tensor)
-    M_true = cp.array(M_true)
-    R_true = cp.array(R_true)
-    Omega = cp.array(Omega)
-    noise = cp.array(noise)
+        I = cp.array(tensor)
+        M_true = cp.array(M_true)
+        R_true = cp.array(R_true)
+        Omega = cp.array(Omega)
+        noise = cp.array(noise)
 
-    with open(path, "wb") as f: # saves so future calls hit the cache branch above.
-        pickle.dump({"I": cp.asnumpy(I), "Omega": cp.asnumpy(Omega),
-                     "M_true": cp.asnumpy(M_true), "R_true": cp.asnumpy(R_true), "noise": cp.asnumpy(noise)}, f)
+        with open(path, "wb") as f: # saves so future calls hit the cache branch above.
+            pickle.dump({"I": cp.asnumpy(I), "Omega": cp.asnumpy(Omega),
+                        "M_true": cp.asnumpy(M_true), "R_true": cp.asnumpy(R_true), 
+                        "noise": cp.asnumpy(noise)},
+                        f)
+            
     return I, Omega, M_true, R_true, noise

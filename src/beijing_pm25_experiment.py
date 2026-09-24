@@ -124,7 +124,7 @@ def evaluate_method(method, X, I,
     rmse = float(cp.sqrt(cp.mean((I[mask_test] - X[mask_test]) ** 2)))
     recovery = float(1 - (cp.linalg.norm(I[mask_test] - X[mask_test]) / cp.linalg.norm(I[mask_test])))
     pinball = float(cp.mean(cp.where(I[mask_test] - X[mask_test] >= 0,
-                                         tau * (I[mask_test] - X[mask_test]), (1 - tau) * -(I[mask_test] - X[mask_test]))))
+                                         tau * (I[mask_test] - X[mask_test]), (1 - tau) * - (I[mask_test] - X[mask_test]))))
 
     metrics = {
         "method": method, "missing": missing,
@@ -138,7 +138,7 @@ def evaluate_method(method, X, I,
     return metrics
 
 # ----- Hyper-parameter setting -----
-sigma, lambda_, qktf_gamma, psi, tau = 1e-3, 1e-3, 1e-4, 10, 0.5
+psi, sigma, qktf_gamma, lambda_, tau = 1e-3, 1e-4, 10, 1e-3, 0.5
 rho, glskf_gamma = 15, 30
 qktf_params = {
     "lengthscaleU": [30.0, 8.0], "lengthscaleR": [7.5, 2.0],
@@ -146,20 +146,20 @@ qktf_params = {
     "d_MaternU": 3, "d_MaternR": 3,
     "tapering_range": 15, "R": 15,
     "psi": psi, "sigma": sigma, "gamma": qktf_gamma, "lambda_": lambda_, "tau": tau,
-    "inner_maxiter": 500, "max_iter": 200, "K0": 40,
+    "inner_maxiter": 500, "max_iter": 100, "K0": 10,
     "distance_matrix": distance_matrices, "seed": seed, "epsilon": 1e-4
 }
 qktflocal_params = {
     "lengthscaleR": [7.5, 2.0], "varianceR": [1.0, 1.0], "d_MaternR": 3,
     "tapering_range": 15, "R": 15,
     "gamma": qktf_gamma, "lambda_": lambda_, "tau": tau,
-    "inner_maxiter": 500, "max_iter": 200,
+    "inner_maxiter": 500, "max_iter": 100,
     "distance_matrix": distance_matrices, "epsilon": 1e-4
 }
 qktfglobal_params = {
     "lengthscaleU": [30.0, 8.0], "varianceU": [1.0, 1.0], "d_MaternU": 3,
     "R": 15, "psi": psi, "sigma": sigma, "tau": tau,
-    "inner_maxiter": 500, "max_iter": 200,
+    "inner_maxiter": 500, "max_iter": 100,
     "distance_matrix": distance_matrices, "seed": seed, "epsilon": 1e-4
 }
 glskf_params = {
@@ -168,7 +168,7 @@ glskf_params = {
     "d_MaternU": 3, "d_MaternR": 3,
     "tapering_range": 15, "R": 15,
     "rho": rho, "gamma": glskf_gamma,
-    "maxiter": 200, "K0": 40,
+    "maxiter": 100, "K0": 10,
     "distance_matrix": distance_matrices, "seed": seed, "epsilon": 1e-4 
 }
 

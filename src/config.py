@@ -1,8 +1,8 @@
-SEEDS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+SEEDS = [1, 2, 3, 4, 5]
 DEVICE = 'cuda'
-TENSOR_SHAPE = (10, 10, 10, 10)
-RANK = 6
-MISSING_FRACTION = 0.3
+TENSOR_SHAPE = (20, 400, 30)
+RANK = 15
+MISSING_FRACTION = 0.9
 TARGET_LOCAL_STD = 5.0
-NOISE_NAME = "Cauchy"
+NOISE_NAME = "LogNormal"
 NOISE_PARAMS = {"loc": 0.0, "scale": 1.0}

@@ -5,6 +5,7 @@ from qktf import qktf
 from glskf import GLSKF
 import itertools
 import time
+import matplotlib.pyplot as plt
 
 # ----- Data loading -----
 seed = 123
@@ -27,20 +28,22 @@ assert not cp.any(mask_train & mask_val)
 eval_qktf = []
 eval_glskf = []
 
-psi = [5.0]
-sigma = [0.05, 0.1, 0.5, 1, 5, 10]
-qktf_gamma = [10.0]
-lambda_ = [0.05, 0.1, 0.5, 1, 5, 10]
-tau = 0.5
+mean = cp.mean(I_train)
+print(mean)
 
-rho = [5, 10, 15]
-glskf_gamma = [10, 20, 30]
+psi = 1e-3
+sigma = 1e-4
+qktf_gamma = 10
+lambda_ = 1e-3
+tau_values = [0.5]
+rho = [15]
+glskf_gamma = [30]
 
 # ----- QKTF training -----
 qktf_iter = 0
 glskf_iter = 0
 
-for psi, sigma, qktf_gamma, lambda_ in itertools.product(psi, sigma, qktf_gamma, lambda_):
+for tau in tau_values:
     cp.random.seed(seed)
     np.random.seed(seed)
 
@@ -48,11 +51,11 @@ for psi, sigma, qktf_gamma, lambda_ in itertools.product(psi, sigma, qktf_gamma,
     "lengthscaleU": [30.0, 8.0], "lengthscaleR": [7.5, 2.0],
     "varianceU": [1.0, 1.0], "varianceR": [1.0, 1.0],
     "d_MaternU": 3, "d_MaternR": 3,
-    "tapering_range": 15, "R": 8,
-    "psi": psi, "sigma": sigma, "gamma": qktf_gamma, "lambda_": lambda_, "tau": 0.5,
-    "inner_maxiter": 500, "max_iter": 100, "K0": 10,
+    "tapering_range": 15, "R": 15,
+    "psi": psi, "sigma": sigma, "gamma": qktf_gamma, "lambda_": lambda_, "tau": tau,
+    "inner_maxiter": 500, "max_iter": 100, "K0": 40,
     "distance_matrix": distance_matrices, "seed": seed, "epsilon": 1e-4
-     }
+    }
     
     cp.cuda.Stream.null.synchronize()
     start = time.perf_counter()
@@ -61,8 +64,6 @@ for psi, sigma, qktf_gamma, lambda_ in itertools.product(psi, sigma, qktf_gamma,
     runtime = time.perf_counter() - start
 
     # ----- Evaluation metrics -----
-    qktf_val_pinball = float(cp.mean(cp.where(I_true[mask_val] - qktf_x[mask_val] >= 0,
-                                        tau * (I_true[mask_val] - qktf_x[mask_val]), (1 - tau) * -(I_true[mask_val] - qktf_x[mask_val]))))
     qktf_val_medae = float(cp.median(cp.abs(I_true[mask_val] - qktf_x[mask_val])))
     qktf_val_mae = float(cp.mean(cp.abs(I_true[mask_val] - qktf_x[mask_val])))
     qktf_val_rmse = float(cp.sqrt(cp.mean((I_true[mask_val] - qktf_x[mask_val])**2)))
@@ -83,7 +84,6 @@ for psi, sigma, qktf_gamma, lambda_ in itertools.product(psi, sigma, qktf_gamma,
         'rtensor_norm': qktf_rtensor_norm,
         'm_norm': qktf_m_norm,
         'x_norm': qktf_x_norm,
-        'val_pinball': qktf_val_pinball,
         'val_rmse': qktf_val_rmse,
         'val_recovery': qktf_val_recovery,
         'val_error': qktf_val_error,
@@ -92,7 +92,6 @@ for psi, sigma, qktf_gamma, lambda_ in itertools.product(psi, sigma, qktf_gamma,
         'runtime': runtime})
 
 eval_qktf_df = pd.DataFrame(eval_qktf)
-eval_qktf_df.to_csv("results/qktf_hyper-parameter_training_beijing_pm25.csv")
 print(eval_qktf_df.to_string())
 
 # ----- GLSKF training -----
@@ -104,9 +103,9 @@ for rho, glskf_gamma in itertools.product(rho, glskf_gamma):
     "lengthscaleU": [30.0, 8.0], "lengthscaleR": [7.5, 2.0],
     "varianceU": [1.0, 1.0], "varianceR": [1.0, 1.0],
     "d_MaternU": 3, "d_MaternR": 3,
-    "tapering_range": 20, "R": 8,
+    "tapering_range": 15, "R": 15,
     "rho": rho, "gamma": glskf_gamma,
-    "maxiter": 100, "K0": 10,
+    "maxiter": 100, "K0": 40,
     "distance_matrix": distance_matrices, "seed": seed, "epsilon": 1e-4 
     }
 
@@ -117,8 +116,6 @@ for rho, glskf_gamma in itertools.product(rho, glskf_gamma):
     runtime = time.perf_counter() - start
 
     # ----- Evaluation metrics -----
-    glskf_val_pinball = float(cp.mean(cp.where(I_true[mask_val] - glskf_x[mask_val] >= 0,
-                                        tau * (I_true[mask_val] - glskf_x[mask_val]), (1 - tau) * -(I_true[mask_val] - glskf_x[mask_val]))))
     glskf_val_medae = float(cp.median(cp.abs(I_true[mask_val] - glskf_x[mask_val])))
     glskf_val_mae = float(cp.mean(cp.abs(I_true[mask_val] - glskf_x[mask_val])))
     glskf_val_rmse = float(cp.sqrt(cp.mean((I_true[mask_val] - glskf_x[mask_val])**2)))
@@ -136,7 +133,6 @@ for rho, glskf_gamma in itertools.product(rho, glskf_gamma):
         'rtensor_norm': glskf_rtensor_norm,
         'm_norm': glskf_m_norm,
         'x_norm': glskf_x_norm,
-        'val_pinball': glskf_val_pinball,
         'val_rmse': glskf_val_rmse,
         'val_recovery': glskf_val_recovery,
         'val_error': glskf_val_error,
@@ -145,8 +141,21 @@ for rho, glskf_gamma in itertools.product(rho, glskf_gamma):
         'runtime': runtime})
 
 eval_glskf_df = pd.DataFrame(eval_glskf)
-eval_glskf_df.to_csv("results/glskf_hyper-parameter_training_beijing_pm25.csv")
 print(eval_glskf_df.to_string())
     
-
+# ----- Tau-sweep visualisation -----
+# plt.figure(figsize=(10,5))
+# plt.plot(eval_qktf_df["tau"], eval_qktf_df["val_mae"],
+#         marker="o", linewidth=1.5, label="QKTF")
+# plt.axhline(y=float(eval_glskf_df["val_mae"].iloc[0]),
+#             color="red", linewidth=1.5, label="GLSKF")
+# plt.xlabel(r"Quantile Level $\tau$")
+# plt.ylabel("Validation MAE")
+# plt.title(r"Validation MAE vs $\tau$-th quantile")
+# plt.xticks(tau_values)
+# plt.legend()
+# plt.tight_layout()
+# plt.savefig("results/tau_sweep_beijing_pm25.png",
+#             dpi=300, bbox_inches="tight")
+# plt.show()
 
